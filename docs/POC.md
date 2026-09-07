@@ -2,6 +2,8 @@
 
 Boucle cible : Explorer → Trouver un filon → Excavation → Loot.
 
+Spécification détaillée de reprise : **[LOTS.md](./LOTS.md)**
+
 ## Lots
 
 - [x] LOT 0 — Initialisation du monorepo

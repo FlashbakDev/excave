@@ -70,3 +70,10 @@ Sur `/game` : ZQSD / WASD / flèches pour explorer localement (collision locale)
 ## État actuel
 
 **Lot 3 terminé** — monde déterministe chunké + persistence du seed. Pas encore de mouvement serveur-autoritaire (Lot 4).
+
+## Documentation
+
+- [Lots — reprise complète](docs/LOTS.md) (détail de tous les lots + bootstrap autre machine)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Protocole](docs/PROTOCOL.md)
+- [Checklist POC](docs/POC.md)
