@@ -4,6 +4,8 @@ Boucle cible : Explorer → Trouver un filon → Excavation → Loot.
 
 Spécification détaillée de reprise : **[LOTS.md](./LOTS.md)**
 
+Phase visuelle (post-POC) : **[VISUAL_LOTS.md](./VISUAL_LOTS.md)** · **[ART_DIRECTION.md](./ART_DIRECTION.md)** · **[PIXEL_ART.md](./PIXEL_ART.md)**
+
 ## Lots
 
 - [x] LOT 0 — Initialisation du monorepo
@@ -16,7 +18,12 @@ Spécification détaillée de reprise : **[LOTS.md](./LOTS.md)**
 - [x] LOT 7 — Interface du mini-jeu d'excavation
 - [x] LOT 8 — Moteur d'excavation autoritaire
 - [x] LOT 9 — Persistence du loot et fin du POC
-- [ ] LOT 10 — Polish POC (pas de nouvelles features)
+- [x] LOT 10 — Direction artistique (docs ; pas de refactor rendu)
+- [x] LOT 11 — Pipeline pixel art (nearest, zoom 1–3, GameAssets, placeholders)
+- [x] LOT 12 — Sol et murs (variants déterministes, autotiling N/S/E/W)
+- [x] LOT 13 — Obscurité et lumière (halo lampe, HUD immersif / F3)
+
+Lots 14–20 : checklist dans **[VISUAL_LOTS.md](./VISUAL_LOTS.md)**.
 
 ## Hors scope POC
 

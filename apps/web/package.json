@@ -8,7 +8,10 @@
     "build": "nuxt build",
     "preview": "nuxt preview",
     "typecheck": "nuxt typecheck",
-    "test": "tsx --test app/game/renderer/cameraMath.test.ts"
+    "test": "tsx --test app/game/renderer/cameraMath.test.ts app/game/renderer/localReconcile.test.ts app/game/assets/pixelScale.test.ts app/game/world/TileVariantResolver.test.ts app/game/lighting/lightRings.test.ts app/game/lighting/floorLightVisibility.test.ts app/game/characters/characterFacing.test.ts app/game/environment/caveDecor.config.test.ts app/game/environment/DecorResolver.test.ts",
+    "assets:placeholders": "node scripts/generate-placeholder-assets.mjs",
+    "assets:explorer": "node scripts/generate-explorer-sprite.mjs",
+    "assets:cave-decor": "node scripts/generate-cave-decor.mjs"
   },
   "dependencies": {
     "@excave/shared": "workspace:*",

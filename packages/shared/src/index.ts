@@ -16,6 +16,9 @@ export {
   EXCAVATION_MAX_ROCK,
   EXCAVATION_MAX_STABILITY,
   EXCAVATION_RANGE_PX,
+  PLAYER_COLLISION_BODY_HEIGHT_PX,
+  PLAYER_COLLISION_FOOT_PAD_PX,
+  PLAYER_COLLISION_HALF_WIDTH_PX,
   PLAYER_SPEED_PX_PER_SEC,
   SCAN_RANGE_PX,
   SCAN_COOLDOWN_MS,
@@ -32,7 +35,7 @@ export {
   isChunkInAoi,
 } from "./aoi.js"
 
-export { stepMovement } from "./movement.js"
+export { canOccupy, stepMovement } from "./movement.js"
 export type { MovementButtons, WalkabilityFn } from "./movement.js"
 
 export { TileType, isTileType } from "./world/tiles.js"

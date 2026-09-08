@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue"
 import type { GameRenderer, GameRendererStats } from "~/game/renderer"
 import type {
   ChunkPayload,
@@ -22,6 +22,12 @@ const overlayRef = ref<{ applyUpdate: (update: ExcavationUpdatePayload) => void 
 )
 const renderer = shallowRef<GameRenderer | null>(null)
 const isDev = import.meta.dev
+/** Lot 13: immersive by default; F3 toggles developer HUD (Lot 18 will formalize). */
+const debugHud = ref(false)
+const route = useRoute()
+const terrainTestActive = computed(
+  () => isDev && String(route.query.terrainTest ?? "") !== "",
+)
 
 const pendingJoin = shallowRef<WorldJoinedPayload | null>(null)
 const pendingChunks = shallowRef<ChunkPayload[] | null>(null)
@@ -39,6 +45,14 @@ function showNotice(message: string): void {
     notice.value = null
     noticeTimer = null
   }, 4000)
+}
+
+function onHudKeyDown(event: KeyboardEvent): void {
+  if (event.repeat || event.code !== "F3") {
+    return
+  }
+  event.preventDefault()
+  debugHud.value = !debugHud.value
 }
 
 const {
@@ -125,21 +139,57 @@ watch(playerId, (id) => {
   renderer.value?.setLocalPlayerId(id)
 })
 
+watch(pingMs, (ms) => {
+  renderer.value?.setRoundTripMs(ms)
+})
+
 function closeExcavation(): void {
   excavationSession.value = null
   renderer.value?.setMovementLocked(false)
 }
 
+/**
+ * Flush network payloads that arrived while Pixi was still booting.
+ * Important: do not publish `renderer` until mount finished — otherwise
+ * world:joined hits applyWorldJoin while world/camera are still null and
+ * is dropped (direct /game loads often lose the join this way).
+ */
+function flushPending(next: GameRenderer): void {
+  if (pendingJoin.value) {
+    next.applyWorldJoin(pendingJoin.value.spawn, pendingJoin.value.chunks)
+    pendingJoin.value = null
+  }
+  if (pendingChunks.value) {
+    next.applyChunks(pendingChunks.value)
+    pendingChunks.value = null
+  }
+  for (const state of pendingStates.value) {
+    next.applyPlayerState(state)
+  }
+  pendingStates.value = []
+  for (const node of pendingNodes.value) {
+    next.applyNodeDetected(node)
+  }
+  pendingNodes.value = []
+}
+
 onMounted(async () => {
-  const host = hostRef.value
+  window.addEventListener("keydown", onHudKeyDown)
+
+  // ClientOnly / hydration can leave the ref unset for one tick on cold /game.
+  let host = hostRef.value
   if (!host) {
+    await nextTick()
+    host = hostRef.value
+  }
+  if (!host) {
+    errorMessage.value = "Zone de rendu indisponible"
     return
   }
 
   try {
     const { GameRenderer } = await import("~/game/renderer")
     const next = new GameRenderer()
-    renderer.value = next
     next.setLocalPlayerId(playerId.value)
     next.onStats((value) => {
       stats.value = value
@@ -165,24 +215,20 @@ onMounted(async () => {
       }
       sendExcavationStart(nodeId)
     })
+
     await next.mount(host)
 
-    if (pendingJoin.value) {
-      next.applyWorldJoin(pendingJoin.value.spawn, pendingJoin.value.chunks)
-      pendingJoin.value = null
+    // Publish only when the world graph exists so socket handlers are safe.
+    renderer.value = next
+    next.setLocalPlayerId(playerId.value)
+    next.setRoundTripMs(pingMs.value)
+
+    if (terrainTestActive.value) {
+      next.loadTerrainTestScene({ debugColors: true, lighting: false })
+      debugHud.value = true
+    } else {
+      flushPending(next)
     }
-    if (pendingChunks.value) {
-      next.applyChunks(pendingChunks.value)
-      pendingChunks.value = null
-    }
-    for (const state of pendingStates.value) {
-      next.applyPlayerState(state)
-    }
-    pendingStates.value = []
-    for (const node of pendingNodes.value) {
-      next.applyNodeDetected(node)
-    }
-    pendingNodes.value = []
   } catch (error) {
     errorMessage.value =
       error instanceof Error ? error.message : "Échec d'initialisation Pixi"
@@ -192,6 +238,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onHudKeyDown)
   if (noticeTimer) {
     clearTimeout(noticeTimer)
   }
@@ -212,9 +259,9 @@ onBeforeUnmount(() => {
       @close="closeExcavation"
     />
 
-    <InventoryPanel :items="inventory" />
+    <InventoryPanel v-if="debugHud || inventory.length > 0" :items="inventory" />
 
-    <div class="hud" aria-live="polite">
+    <div v-if="debugHud" class="hud hud-debug" aria-live="polite">
       <p>
         Connexion :
         <span :data-status="status">{{ connectionLabel }}</span>
@@ -231,10 +278,29 @@ onBeforeUnmount(() => {
         Visibles : {{ stats.remoteCount }}
       </p>
       <p v-if="isDev && stats">FPS {{ stats.fps.toFixed(0) }}</p>
+      <p v-if="stats">Zoom {{ stats.zoom }}×</p>
+      <p v-if="terrainTestActive" class="hint">
+        Terrain test · C debug colors · L lighting · 1/2/3 zoom
+      </p>
+      <p v-else class="hint">F3 : masquer le debug · 1/2/3 zoom · E scan</p>
+    </div>
+
+    <div v-else class="hud hud-minimal" aria-live="polite">
+      <p v-if="status !== 'connected'" :data-status="status">
+        {{ connectionLabel }}
+      </p>
       <p v-if="notice" class="notice">{{ notice }}</p>
       <p v-if="lastError" class="error">{{ lastError }}</p>
       <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
-      <p class="hint">E / Espace : scanner (2s) puis excavate · ZQSD pour bouger</p>
+      <p v-if="!notice && !lastError && !errorMessage && status === 'connected'" class="hint">
+        [E] scanner · F3 debug
+      </p>
+    </div>
+
+    <div v-if="debugHud" class="hud-notices" aria-live="polite">
+      <p v-if="notice" class="notice">{{ notice }}</p>
+      <p v-if="lastError" class="error">{{ lastError }}</p>
+      <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
     </div>
   </div>
 </template>
@@ -247,7 +313,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #12100e;
+  background: #080908;
 }
 
 .canvas-host {
@@ -259,6 +325,8 @@ onBeforeUnmount(() => {
   display: block;
   width: 100%;
   height: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 .hud {
@@ -269,10 +337,26 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: 0.65rem 0.8rem;
   border: 1px solid #3a342c;
-  background: rgba(18, 16, 14, 0.82);
+  background: rgba(8, 9, 8, 0.82);
   color: #e8e2d6;
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   pointer-events: none;
+}
+
+.hud-minimal {
+  border-color: transparent;
+  background: transparent;
+  padding: 0.5rem 0.65rem;
+}
+
+.hud-notices {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 2;
+  margin-top: 9rem;
+  pointer-events: none;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .hud p {
@@ -310,5 +394,20 @@ onBeforeUnmount(() => {
   margin-top: 0.45rem;
   color: #8a8275;
   font-size: 11px;
+}
+
+.hud-notices .error {
+  color: #c47a7a;
+  max-width: 18rem;
+}
+
+.hud-notices .notice {
+  color: #d4a017;
+  max-width: 18rem;
+}
+
+.hud-minimal .hint {
+  margin-top: 0;
+  opacity: 0.75;
 }
 </style>

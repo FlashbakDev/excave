@@ -1,0 +1,110 @@
+{
+  "meta": {
+    "image": "explorer.png",
+    "size": {
+      "w": 64,
+      "h": 48
+    },
+    "scale": 1,
+    "format": "RGBA8888",
+    "notes": "Lot 14 Excave explorer. Right frames = mirror of left at runtime. Walk cycle uses frames 0,1,2,1."
+  },
+  "frames": {
+    "explorer_idle_down_0": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_down_0": {
+      "frame": {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_down_1": {
+      "frame": {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_down_2": {
+      "frame": {
+        "x": 48,
+        "y": 0,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_idle_up_0": {
+      "frame": {
+        "x": 0,
+        "y": 16,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_up_0": {
+      "frame": {
+        "x": 16,
+        "y": 16,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_up_1": {
+      "frame": {
+        "x": 32,
+        "y": 16,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_up_2": {
+      "frame": {
+        "x": 48,
+        "y": 16,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_idle_left_0": {
+      "frame": {
+        "x": 0,
+        "y": 32,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_left_0": {
+      "frame": {
+        "x": 16,
+        "y": 32,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_left_1": {
+      "frame": {
+        "x": 32,
+        "y": 32,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "explorer_walk_left_2": {
+      "frame": {
+        "x": 48,
+        "y": 32,
+        "w": 16,
+        "h": 16
+      }
+    }
+  }
+}

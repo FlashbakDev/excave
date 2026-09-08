@@ -1,0 +1,142 @@
+{
+  "meta": {
+    "image": "cave_decor.png",
+    "size": {
+      "w": 64,
+      "h": 64
+    },
+    "scale": 1,
+    "format": "RGBA8888",
+    "notes": "Lot 15A Excave cave decor. Static, ≤1 tile, muted rock/soil only — no glow, no gem saturation, not interactive ore."
+  },
+  "frames": {
+    "decor_stone_sm": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_stone_md": {
+      "frame": {
+        "x": 16,
+        "y": 0,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_pebbles": {
+      "frame": {
+        "x": 32,
+        "y": 0,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_pebbles_loose": {
+      "frame": {
+        "x": 48,
+        "y": 0,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_crack_floor": {
+      "frame": {
+        "x": 0,
+        "y": 16,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_crack_floor_y": {
+      "frame": {
+        "x": 16,
+        "y": 16,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_dust": {
+      "frame": {
+        "x": 32,
+        "y": 16,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_dust_scatter": {
+      "frame": {
+        "x": 48,
+        "y": 16,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_root": {
+      "frame": {
+        "x": 0,
+        "y": 32,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_root_fork": {
+      "frame": {
+        "x": 16,
+        "y": 32,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_mushroom": {
+      "frame": {
+        "x": 32,
+        "y": 32,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_mushroom_pair": {
+      "frame": {
+        "x": 48,
+        "y": 32,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_wall_crack": {
+      "frame": {
+        "x": 0,
+        "y": 48,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_wall_crack_diag": {
+      "frame": {
+        "x": 16,
+        "y": 48,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_wall_chip": {
+      "frame": {
+        "x": 32,
+        "y": 48,
+        "w": 16,
+        "h": 16
+      }
+    },
+    "decor_mineral_trace": {
+      "frame": {
+        "x": 48,
+        "y": 48,
+        "w": 16,
+        "h": 16
+      }
+    }
+  }
+}

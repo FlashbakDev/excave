@@ -14,10 +14,21 @@ import {
   type PlayerStatePayload,
   type WorldPosition,
 } from "@excave/shared"
+import { GameAssets, isCameraZoomLevel, type CameraZoomLevel } from "../assets"
 import { InteractionInput } from "../input/InteractionInput"
 import { MovementInput } from "../input/MovementInput"
+import {
+  PlayerLightOverlay,
+  REMOTE_LIGHT_STRENGTH,
+  type LightSource,
+} from "../lighting"
+import {
+  TERRAIN_TEST_SPAWN,
+  buildTerrainTestChunks,
+} from "../world"
 import { Camera } from "./Camera"
 import { WORLD_BACKGROUND } from "./constants"
+import { planLocalReconcile } from "./localReconcile"
 import { WorldContainer } from "./WorldContainer"
 
 export interface GameRendererStats {
@@ -29,6 +40,7 @@ export interface GameRendererStats {
   chunkX: number
   chunkY: number
   remoteCount: number
+  zoom: CameraZoomLevel
 }
 
 export type GameRendererStatsListener = (stats: GameRendererStats) => void
@@ -38,8 +50,6 @@ export type ScanListener = () => void
 export type ExcavationStartListener = (nodeId: ExcavationNodeId) => void
 
 const INPUT_SEND_INTERVAL_MS = 1000 / SIM_TICK_HZ
-const RECONCILE_SNAP_PX = 48
-const RECONCILE_BLEND = 0.35
 
 interface RemoteSample {
   from: WorldPosition
@@ -56,6 +66,8 @@ export class GameRenderer {
   private app: Application | null = null
   private camera: Camera | null = null
   private world: WorldContainer | null = null
+  private lighting: PlayerLightOverlay | null = null
+  private assets: GameAssets | null = null
   private host: HTMLElement | null = null
   private resizeObserver: ResizeObserver | null = null
   private statsListener: GameRendererStatsListener | null = null
@@ -80,6 +92,42 @@ export class GameRenderer {
   private joined = false
   private readonly remotes = new Map<string, RemoteSample>()
   private movementLocked = false
+  /** Last time a movement key was held — grace window avoids idle settle rubber-band. */
+  private lastMoveInputAtMs = 0
+  /** Smoothed one-way latency estimate from session pongs (seconds). */
+  private oneWayLatencySec = 0.05
+  /** Dev fixed cave map — skips network world / decor; lighting optional. */
+  private terrainTestMode = false
+  /** Lamp overlay — off for now while terrain relief is validated. */
+  private lightingEnabled = false
+
+  private readonly onZoomKeyDown = (event: KeyboardEvent): void => {
+    if (event.repeat || !this.camera) {
+      return
+    }
+
+    if (this.terrainTestMode) {
+      if (event.code === "KeyC") {
+        event.preventDefault()
+        this.world?.setTerrainDebugColors(!this.world.getTerrainDebugColors())
+        return
+      }
+      if (event.code === "KeyL") {
+        event.preventDefault()
+        this.setLightingEnabled(!this.lightingEnabled)
+        return
+      }
+    }
+
+    const zoom = Number(event.key)
+    if (!isCameraZoomLevel(zoom)) {
+      return
+    }
+    event.preventDefault()
+    this.camera.setZoom(zoom)
+    this.updateLighting()
+    this.emitStats()
+  }
 
   private readonly onTick = (): void => {
     if (!this.app || !this.world || !this.camera || this.destroyed) {
@@ -102,6 +150,7 @@ export class GameRenderer {
     }
 
     this.camera.setFocus(this.world.getPlayerPosition())
+    this.updateLighting()
     this.maybeRequestChunks()
     this.emitStats()
   }
@@ -117,33 +166,54 @@ export class GameRenderer {
 
     this.host = host
 
+    GameAssets.configurePixelPerfectDefaults()
+
+    const assets = new GameAssets()
+    await assets.load()
+    if (this.destroyed) {
+      assets.destroy()
+      return
+    }
+    this.assets = assets
+
     const app = new Application()
+    const resolution = Math.max(1, Math.round(window.devicePixelRatio || 1))
     await app.init({
       background: WORLD_BACKGROUND,
-      antialias: true,
-      resolution: window.devicePixelRatio || 1,
+      antialias: false,
+      resolution,
       autoDensity: true,
       preference: "webgl",
+      roundPixels: true,
     })
 
     if (this.destroyed) {
       app.destroy({ removeView: true }, { children: true })
+      assets.destroy()
+      this.assets = null
       return
     }
 
     this.app = app
+    applyCanvasPixelStyle(app.canvas)
     host.appendChild(app.canvas)
 
-    const world = new WorldContainer()
+    const world = new WorldContainer(assets)
     const camera = new Camera()
     camera.attachWorld(world.root)
     app.stage.addChild(camera.view)
 
+    const lighting = new PlayerLightOverlay()
+    lighting.root.visible = false
+    app.stage.addChild(lighting.root)
+
     this.world = world
     this.camera = camera
+    this.lighting = lighting
 
     this.resizeToHost()
     camera.setFocus(world.getPlayerPosition())
+    this.updateLighting()
 
     this.resizeObserver = new ResizeObserver(() => {
       this.resizeToHost()
@@ -152,6 +222,7 @@ export class GameRenderer {
 
     this.movement.attach()
     this.interaction.attach()
+    window.addEventListener("keydown", this.onZoomKeyDown)
     app.ticker.add(this.onTick)
     this.emitStats()
   }
@@ -189,12 +260,22 @@ export class GameRenderer {
     this.localPlayerId = playerId
   }
 
+  /** Update RTT estimate from session ping (ms round-trip). */
+  setRoundTripMs(pingMs: number | null): void {
+    if (pingMs === null || !Number.isFinite(pingMs) || pingMs < 0) {
+      return
+    }
+    this.oneWayLatencySec = Math.min(0.2, Math.max(0.02, pingMs / 2000))
+  }
+
   applyWorldJoin(spawn: WorldPosition, chunks: readonly ChunkPayload[]): void {
-    if (!this.world || !this.camera) {
+    if (!this.world || !this.camera || this.terrainTestMode) {
+      // Caller must wait until mount() resolves — see GameCanvas flushPending.
+      // Terrain test scene owns the map; ignore live world joins.
       return
     }
     this.world.upsertChunks(chunks)
-    this.world.setPlayerPosition(spawn)
+    this.world.setPlayerPosition(spawn, { animate: false })
     this.camera.setFocus(spawn)
     this.lastChunkKey = ""
     this.joined = true
@@ -203,8 +284,56 @@ export class GameRenderer {
   }
 
   applyChunks(chunks: readonly ChunkPayload[]): void {
+    if (this.terrainTestMode) {
+      return
+    }
     this.world?.upsertChunks(chunks)
     this.emitStats()
+  }
+
+  /**
+   * Dev-only fixed cave for FLOOR/WALL relief checks.
+   * Decor off, debug colors on, lighting off until toggled (L).
+   */
+  loadTerrainTestScene(options?: {
+    debugColors?: boolean
+    lighting?: boolean
+  }): void {
+    if (!this.world || !this.camera) {
+      return
+    }
+
+    this.terrainTestMode = true
+    this.world.setDecorEnabled(false)
+    this.world.setTerrainDebugColors(options?.debugColors ?? true)
+    this.setLightingEnabled(options?.lighting ?? false)
+
+    const chunks = buildTerrainTestChunks()
+    this.world.upsertChunks(chunks)
+    this.world.setPlayerPosition(TERRAIN_TEST_SPAWN, { animate: false })
+    this.camera.setFocus(TERRAIN_TEST_SPAWN)
+    this.lastChunkKey = ""
+    this.joined = true
+    this.updateLighting()
+    this.emitStats()
+  }
+
+  setLightingEnabled(enabled: boolean): void {
+    this.lightingEnabled = enabled
+    if (this.lighting) {
+      this.lighting.root.visible = enabled
+    }
+    if (enabled) {
+      this.updateLighting()
+    }
+  }
+
+  isTerrainTestMode(): boolean {
+    return this.terrainTestMode
+  }
+
+  isLightingEnabled(): boolean {
+    return this.lightingEnabled
   }
 
   applyPlayerState(payload: PlayerStatePayload): void {
@@ -276,9 +405,13 @@ export class GameRenderer {
     this.remotes.clear()
     this.joined = false
     this.movementLocked = false
+    this.lastMoveInputAtMs = 0
+    this.oneWayLatencySec = 0.05
+    this.inputSequence = 0
 
     this.movement.detach()
     this.interaction.detach()
+    window.removeEventListener("keydown", this.onZoomKeyDown)
 
     this.resizeObserver?.disconnect()
     this.resizeObserver = null
@@ -289,6 +422,10 @@ export class GameRenderer {
       this.app = null
     }
 
+    this.assets?.destroy()
+    this.assets = null
+    this.lighting?.destroy()
+    this.lighting = null
     this.world = null
     this.camera = null
     this.host = null
@@ -300,6 +437,10 @@ export class GameRenderer {
     }
 
     const buttons = this.movement.read()
+    if (buttons.up || buttons.down || buttons.left || buttons.right) {
+      this.lastMoveInputAtMs = performance.now()
+    }
+
     const current = this.world.getPlayerPosition()
     const stepped = stepMovement(
       current,
@@ -315,24 +456,26 @@ export class GameRenderer {
       return
     }
 
-    const current = this.world.getPlayerPosition()
-    const dx = entry.x - current.x
-    const dy = entry.y - current.y
-    const distance = Math.hypot(dx, dy)
-
-    if (distance > RECONCILE_SNAP_PX) {
-      this.world.setPlayerPosition({ x: entry.x, y: entry.y })
-      return
+    // Keep client sequences ahead of server ack after resume / remount.
+    if (entry.lastProcessedSequence > this.inputSequence) {
+      this.inputSequence = entry.lastProcessedSequence
     }
 
-    if (distance < 0.5) {
-      return
-    }
-
-    this.world.setPlayerPosition({
-      x: current.x + dx * RECONCILE_BLEND,
-      y: current.y + dy * RECONCILE_BLEND,
+    const action = planLocalReconcile({
+      current: this.world.getPlayerPosition(),
+      auth: { x: entry.x, y: entry.y },
+      buttons: this.movement.read(),
+      nowMs: performance.now(),
+      lastMoveInputAtMs: this.lastMoveInputAtMs,
+      oneWayLatencySec: this.oneWayLatencySec,
+      isWalkable: (position) => this.world!.isWalkableAt(position),
     })
+
+    if (action.type === "none") {
+      return
+    }
+
+    this.world.setPlayerPosition(action.position, { animate: false })
   }
 
   private flushInput(deltaMS: number): void {
@@ -351,6 +494,9 @@ export class GameRenderer {
     this.inputAccumMs = 0
     this.inputSequence += 1
     this.lastSentButtons = { ...buttons }
+    if (buttons.up || buttons.down || buttons.left || buttons.right) {
+      this.lastMoveInputAtMs = performance.now()
+    }
     this.inputSendListener(buttons, this.inputSequence)
   }
 
@@ -382,7 +528,7 @@ export class GameRenderer {
   }
 
   private maybeRequestChunks(): void {
-    if (!this.world || !this.chunkRequestListener) {
+    if (!this.world || !this.chunkRequestListener || this.terrainTestMode) {
       return
     }
 
@@ -392,6 +538,9 @@ export class GameRenderer {
       return
     }
     this.lastChunkKey = key
+
+    // Keep only the AOI neighborhood — prevents sprite accumulation on long walks.
+    this.world.pruneChunksOutside(chunk, AOI_RADIUS)
 
     const missing = this.world.getMissingNeighborhood(chunk, AOI_RADIUS)
     if (missing.length > 0) {
@@ -409,11 +558,47 @@ export class GameRenderer {
 
     this.app.renderer.resize(width, height)
     this.camera.setViewport(width, height)
+    this.lighting?.setViewport(width, height)
+    this.updateLighting()
     this.emitStats()
   }
 
+  private updateLighting(): void {
+    if (!this.world || !this.camera || !this.lighting || !this.lightingEnabled) {
+      return
+    }
+
+    const localLight = this.world.getLocalLightPosition()
+    const localFeet = this.world.getPlayerPosition()
+    const lights: LightSource[] = [
+      {
+        x: localLight.x,
+        y: localLight.y,
+        floorX: localFeet.x,
+        floorY: localFeet.y,
+        strength: 1,
+      },
+    ]
+    for (const remote of this.world.getRemoteLightPositions()) {
+      lights.push({
+        x: remote.x,
+        y: remote.y,
+        floorX: remote.x,
+        floorY: remote.y + 14,
+        strength: REMOTE_LIGHT_STRENGTH,
+      })
+    }
+
+    this.lighting.redraw(
+      lights,
+      this.camera.getZoom(),
+      this.camera.getOffset(),
+      (tx, ty) => this.world!.isFloorTile(tx, ty),
+    )
+  }
+
   private emitStats(): void {
-    if (!this.statsListener || !this.app || !this.world) {
+    if (!this.statsListener || !this.app || !this.world || !this.camera) {
       return
     }
 
@@ -428,6 +613,7 @@ export class GameRenderer {
       chunkX: chunk.x,
       chunkY: chunk.y,
       remoteCount: this.world.getRemoteCount(),
+      zoom: this.camera.getZoom(),
     })
   }
 }
@@ -442,4 +628,11 @@ function interpolateRemote(sample: RemoteSample, now: number): WorldPosition {
     x: sample.from.x + (sample.to.x - sample.from.x) * t,
     y: sample.from.y + (sample.to.y - sample.from.y) * t,
   }
+}
+
+function applyCanvasPixelStyle(canvas: HTMLCanvasElement): void {
+  canvas.style.imageRendering = "pixelated"
+  canvas.style.width = "100%"
+  canvas.style.height = "100%"
+  canvas.style.display = "block"
 }

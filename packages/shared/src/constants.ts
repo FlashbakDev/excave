@@ -2,7 +2,7 @@
 export const TILE_SIZE = 32
 
 /** Number of tiles along one chunk edge. */
-export const CHUNK_SIZE = 32
+export const CHUNK_SIZE = 16
 
 /** Sole POC world id. */
 export const DEFAULT_WORLD_ID = "main" as const
@@ -12,6 +12,14 @@ export const WORLD_ROOM_PERIOD = 16
 
 /** Player movement speed (pixels / second). */
 export const PLAYER_SPEED_PX_PER_SEC = 140
+
+/**
+ * Collision footprint (world px) around feet — matches ~16×16×2 explorer body.
+ * halfWidth keeps shoulders clear of wall tiles; bodyHeight covers torso north.
+ */
+export const PLAYER_COLLISION_HALF_WIDTH_PX = 11
+export const PLAYER_COLLISION_BODY_HEIGHT_PX = 14
+export const PLAYER_COLLISION_FOOT_PAD_PX = 2
 
 /** Server simulation rate. */
 export const SIM_TICK_HZ = 20

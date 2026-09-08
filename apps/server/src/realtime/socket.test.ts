@@ -102,7 +102,7 @@ describe("socket guest session", () => {
 
       assert.equal(joined.worldId, "main")
       assert.equal(joined.chunks.length, 9)
-      assert.ok(joined.chunks[0]?.tiles.length === 32 * 32)
+      assert.ok(joined.chunks[0]?.tiles.length === 16 * 16)
     } finally {
       client.close()
       await waitFor(() => built.registry.count() === 0)
