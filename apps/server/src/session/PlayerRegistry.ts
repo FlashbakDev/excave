@@ -7,21 +7,39 @@ export interface GuestPlayer {
   connectedAt: number
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+export function isPlayerId(value: unknown): value is PlayerId {
+  return typeof value === "string" && UUID_RE.test(value)
+}
+
 /**
  * In-memory guest players for the current server process.
- * Nothing here is persisted (Lot 2).
+ * PlayerIds may be resumed from the client (Lot 9) when not already connected.
  */
 export class PlayerRegistry {
   private readonly bySocketId = new Map<string, GuestPlayer>()
   private readonly byPlayerId = new Map<PlayerId, GuestPlayer>()
 
-  create(socketId: string, now = Date.now()): GuestPlayer {
+  create(socketId: string, preferredPlayerId?: string | null, now = Date.now()): GuestPlayer {
     if (this.bySocketId.has(socketId)) {
       throw new Error(`Socket already registered: ${socketId}`)
     }
 
+    let playerId: PlayerId
+    if (
+      preferredPlayerId &&
+      isPlayerId(preferredPlayerId) &&
+      !this.byPlayerId.has(preferredPlayerId)
+    ) {
+      playerId = preferredPlayerId
+    } else {
+      playerId = randomUUID() as PlayerId
+    }
+
     const player: GuestPlayer = {
-      playerId: randomUUID() as PlayerId,
+      playerId,
       socketId,
       connectedAt: now,
     }
@@ -44,6 +62,10 @@ export class PlayerRegistry {
 
   getBySocketId(socketId: string): GuestPlayer | undefined {
     return this.bySocketId.get(socketId)
+  }
+
+  getByPlayerId(playerId: PlayerId): GuestPlayer | undefined {
+    return this.byPlayerId.get(playerId)
   }
 
   list(): GuestPlayer[] {

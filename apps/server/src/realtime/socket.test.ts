@@ -5,6 +5,7 @@ import {
   ClientToServerEvent,
   ServerToClientEvent,
   type ClientToServerEvents,
+  type PlayerStatePayload,
   type ServerToClientEvents,
   type SessionReadyPayload,
   type WorldJoinedPayload,
@@ -30,6 +31,7 @@ describe("socket guest session", () => {
   })
 
   after(async () => {
+    built.gameLoop?.stop()
     built.io?.close()
     await built.app.close()
   })
@@ -103,6 +105,133 @@ describe("socket guest session", () => {
       assert.ok(joined.chunks[0]?.tiles.length === 32 * 32)
     } finally {
       client.close()
+      await waitFor(() => built.registry.count() === 0)
+    }
+  })
+
+  it("applies player input and broadcasts authoritative state", async () => {
+    const client = connectClient()
+
+    try {
+      const ready = await waitForEvent<SessionReadyPayload>(
+        client,
+        ServerToClientEvent.SessionReady,
+      )
+
+      const states: PlayerStatePayload[] = []
+      client.on(ServerToClientEvent.PlayerState, (payload) => {
+        states.push(payload)
+      })
+
+      client.emit(ClientToServerEvent.WorldJoin, {})
+      await waitForEvent<WorldJoinedPayload>(client, ServerToClientEvent.WorldJoined)
+
+      client.emit(ClientToServerEvent.PlayerInput, {
+        up: false,
+        down: false,
+        left: false,
+        right: true,
+        sequence: 1,
+      })
+
+      for (let i = 0; i < 6; i += 1) {
+        built.gameLoop?.step()
+      }
+
+      await waitFor(() =>
+        states.some((state) =>
+          state.players.some(
+            (entry) =>
+              entry.playerId === ready.playerId &&
+              entry.lastProcessedSequence === 1,
+          ),
+        ),
+      )
+
+      const match = states
+        .flatMap((state) => state.players)
+        .find(
+          (entry) =>
+            entry.playerId === ready.playerId &&
+            entry.lastProcessedSequence === 1,
+        )
+      assert.ok(match)
+      assert.ok(typeof match.x === "number")
+      assert.ok(typeof match.y === "number")
+    } finally {
+      client.close()
+      await waitFor(() => built.registry.count() === 0)
+    }
+  })
+
+  it("filters player state by AOI and joins chunk rooms", async () => {
+    const first = connectClient()
+    const second = connectClient()
+
+    try {
+      const [readyA, readyB] = await Promise.all([
+        waitForEvent<SessionReadyPayload>(first, ServerToClientEvent.SessionReady),
+        waitForEvent<SessionReadyPayload>(second, ServerToClientEvent.SessionReady),
+      ])
+
+      const statesA: PlayerStatePayload[] = []
+      first.on(ServerToClientEvent.PlayerState, (payload) => {
+        statesA.push(payload)
+      })
+
+      first.emit(ClientToServerEvent.WorldJoin, {})
+      second.emit(ClientToServerEvent.WorldJoin, {})
+      await Promise.all([
+        waitForEvent<WorldJoinedPayload>(first, ServerToClientEvent.WorldJoined),
+        waitForEvent<WorldJoinedPayload>(second, ServerToClientEvent.WorldJoined),
+      ])
+
+      const debug = await built.app.inject({ method: "GET", url: "/debug/players" })
+      const body = debug.json<{
+        players: Array<{ aoiRooms: string[] }>
+      }>()
+      assert.equal(body.players.length, 2)
+      assert.equal(body.players[0]?.aoiRooms.length, 9)
+
+      for (let i = 0; i < 4; i += 1) {
+        built.gameLoop?.step()
+      }
+
+      await waitFor(() =>
+        statesA.some((state) =>
+          state.players.some((entry) => entry.playerId === readyB.playerId),
+        ),
+      )
+
+      const nearby = statesA.at(-1)
+      assert.ok(nearby)
+      assert.ok(nearby.players.some((entry) => entry.playerId === readyA.playerId))
+      assert.ok(nearby.players.some((entry) => entry.playerId === readyB.playerId))
+
+      const far = built.runtimes.get(readyB.playerId)
+      assert.ok(far)
+      far.position = {
+        x: far.position.x + 32 * 32 * 5,
+        y: far.position.y,
+      }
+      far.currentChunk = built.world.worldPositionToChunk(far.position)
+
+      statesA.length = 0
+      for (let i = 0; i < 4; i += 1) {
+        built.gameLoop?.step()
+      }
+
+      await waitFor(() => statesA.length > 0)
+      const filtered = statesA.at(-1)
+      assert.ok(filtered)
+      assert.ok(filtered.players.some((entry) => entry.playerId === readyA.playerId))
+      assert.equal(
+        filtered.players.some((entry) => entry.playerId === readyB.playerId),
+        false,
+      )
+    } finally {
+      first.close()
+      second.close()
       await waitFor(() => built.registry.count() === 0)
     }
   })

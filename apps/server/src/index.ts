@@ -10,12 +10,26 @@ const PORT = Number(process.env.PORT ?? 3001)
 const HOST = process.env.HOST ?? "0.0.0.0"
 
 async function main() {
-  const { app, db } = await buildServer()
+  const { app, db, gameLoop } = await buildServer()
+
+  const shutdown = async () => {
+    gameLoop?.stop()
+    await app.close()
+    await db?.client.end({ timeout: 2 })
+  }
+
+  process.once("SIGINT", () => {
+    void shutdown().then(() => process.exit(0))
+  })
+  process.once("SIGTERM", () => {
+    void shutdown().then(() => process.exit(0))
+  })
 
   try {
     await app.listen({ port: PORT, host: HOST })
   } catch (error) {
     app.log.error(error)
+    gameLoop?.stop()
     await db?.client.end({ timeout: 2 })
     process.exit(1)
   }

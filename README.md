@@ -63,13 +63,13 @@ curl http://127.0.0.1:3001/debug/world
 curl http://127.0.0.1:3001/debug/chunk/0/0
 ```
 
-## Contrôles (Lot 3)
+## Contrôles (Lot 9)
 
-Sur `/game` : ZQSD / WASD / flèches pour explorer localement (collision locale). Le HUD affiche `Chunk X:Y`.
+Sur `/game` : ZQSD pour bouger. `E` / Espace pour scanner puis démarrer. Overlay excavation ; inventaire en haut à droite. Le même onglet reprend le même `playerId` (loot persistant après restart serveur si Postgres est up).
 
 ## État actuel
 
-**Lot 3 terminé** — monde déterministe chunké + persistence du seed. Pas encore de mouvement serveur-autoritaire (Lot 4).
+**POC jouable (Lots 0–9).** Prochain : **Lot 10 — polish** (UX / docs / dette légère, **aucune** nouvelle feature).
 
 ## Documentation
 

@@ -7,6 +7,20 @@ import {
   type ChunkCoordinate,
   type ChunkPayload,
   type ClientToServerEvents,
+  type ExcavationHitPayload,
+  type ExcavationNodeId,
+  type ExcavationRejectedPayload,
+  type ExcavationStartedPayload,
+  type ExcavationToolId,
+  type ExcavationUpdatePayload,
+  type InventoryItemPublic,
+  type InventoryUpdatePayload,
+  type MovementButtons,
+  type NodeDetectedPayload,
+  type NodeUpdatedPayload,
+  type PlayerScanRejectedPayload,
+  type PlayerScannedPayload,
+  type PlayerStatePayload,
   type ServerToClientEvents,
   type WorldJoinedPayload,
   type WorldPosition,
@@ -15,19 +29,40 @@ import {
 export type ConnectionStatus = "disconnected" | "connecting" | "connected"
 
 const PING_INTERVAL_MS = 2000
+const GUEST_PLAYER_KEY = "excave.guestPlayerId"
 
 type GameSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
 export type WorldJoinHandler = (payload: WorldJoinedPayload) => void
 export type WorldChunksHandler = (chunks: ChunkPayload[]) => void
+export type PlayerStateHandler = (payload: PlayerStatePayload) => void
+export type NodeDetectedHandler = (payload: NodeDetectedPayload) => void
+export type NodeUpdatedHandler = (payload: NodeUpdatedPayload) => void
+export type PlayerScannedHandler = (payload: PlayerScannedPayload) => void
+export type PlayerScanRejectedHandler = (
+  payload: PlayerScanRejectedPayload,
+) => void
+export type ExcavationStartedHandler = (payload: ExcavationStartedPayload) => void
+export type ExcavationRejectedHandler = (payload: ExcavationRejectedPayload) => void
+export type ExcavationUpdateHandler = (payload: ExcavationUpdatePayload) => void
+export type InventoryUpdateHandler = (payload: InventoryUpdatePayload) => void
 
 /**
  * Guest Socket.IO session for the game page.
- * Connects on mount (client only) and disconnects on unmount.
+ * Resumes the same guest playerId from localStorage when possible (Lot 9).
  */
 export function useGameSession(options?: {
   onWorldJoined?: WorldJoinHandler
   onWorldChunks?: WorldChunksHandler
+  onPlayerState?: PlayerStateHandler
+  onNodeDetected?: NodeDetectedHandler
+  onNodeUpdated?: NodeUpdatedHandler
+  onPlayerScanned?: PlayerScannedHandler
+  onPlayerScanRejected?: PlayerScanRejectedHandler
+  onExcavationStarted?: ExcavationStartedHandler
+  onExcavationRejected?: ExcavationRejectedHandler
+  onExcavationUpdate?: ExcavationUpdateHandler
+  onInventoryUpdate?: InventoryUpdateHandler
 }) {
   const config = useRuntimeConfig()
   const status = ref<ConnectionStatus>("disconnected")
@@ -36,12 +71,22 @@ export function useGameSession(options?: {
   const lastError = ref<string | null>(null)
   const worldId = ref<string | null>(null)
   const spawn = ref<WorldPosition | null>(null)
+  const inventory = ref<InventoryItemPublic[]>([])
 
   const socket = shallowRef<GameSocket | null>(null)
 
   let pingTimer: ReturnType<typeof setInterval> | null = null
   const onWorldJoined = options?.onWorldJoined
   const onWorldChunks = options?.onWorldChunks
+  const onPlayerState = options?.onPlayerState
+  const onNodeDetected = options?.onNodeDetected
+  const onNodeUpdated = options?.onNodeUpdated
+  const onPlayerScanned = options?.onPlayerScanned
+  const onPlayerScanRejected = options?.onPlayerScanRejected
+  const onExcavationStarted = options?.onExcavationStarted
+  const onExcavationRejected = options?.onExcavationRejected
+  const onExcavationUpdate = options?.onExcavationUpdate
+  const onInventoryUpdate = options?.onInventoryUpdate
 
   const shortPlayerId = computed(() => {
     if (!playerId.value) {
@@ -89,6 +134,65 @@ export function useGameSession(options?: {
     })
   }
 
+  function sendInput(buttons: MovementButtons, sequence: number): void {
+    const current = socket.value
+    if (!current?.connected || !worldId.value) {
+      return
+    }
+    current.emit(ClientToServerEvent.PlayerInput, {
+      ...buttons,
+      sequence,
+    })
+  }
+
+  function sendScan(): void {
+    const current = socket.value
+    if (!current?.connected || !worldId.value) {
+      return
+    }
+    current.emit(ClientToServerEvent.PlayerScan, {
+      clientTime: Date.now(),
+    })
+  }
+
+  function sendExcavationStart(nodeId: ExcavationNodeId): void {
+    const current = socket.value
+    if (!current?.connected || !worldId.value) {
+      return
+    }
+    current.emit(ClientToServerEvent.ExcavationStart, { nodeId })
+  }
+
+  function sendExcavationHit(
+    sessionId: string,
+    x: number,
+    y: number,
+    tool: ExcavationToolId,
+  ): void {
+    const current = socket.value
+    if (!current?.connected || !worldId.value) {
+      return
+    }
+    const payload: ExcavationHitPayload = { sessionId, x, y, tool }
+    current.emit(ClientToServerEvent.ExcavationHit, payload)
+  }
+
+  function readStoredPlayerId(): string | null {
+    try {
+      return localStorage.getItem(GUEST_PLAYER_KEY)
+    } catch {
+      return null
+    }
+  }
+
+  function storePlayerId(id: string): void {
+    try {
+      localStorage.setItem(GUEST_PLAYER_KEY, id)
+    } catch {
+      // ignore quota / private mode
+    }
+  }
+
   async function connect(): Promise<void> {
     if (!import.meta.client || socket.value) {
       return
@@ -98,16 +202,21 @@ export function useGameSession(options?: {
     lastError.value = null
 
     const { io } = await import("socket.io-client")
+    const storedPlayerId = readStoredPlayerId()
 
     const next: GameSocket = io(String(config.public.socketUrl), {
       transports: ["websocket", "polling"],
       autoConnect: true,
+      auth: storedPlayerId ? { playerId: storedPlayerId } : {},
     })
 
     socket.value = next
 
     next.on(ServerToClientEvent.SessionReady, (payload) => {
       playerId.value = payload.playerId
+      storePlayerId(payload.playerId)
+      inventory.value = [...payload.inventory]
+      onInventoryUpdate?.({ items: payload.inventory })
       status.value = "connected"
       clearPingTimer()
       sendPing()
@@ -127,6 +236,43 @@ export function useGameSession(options?: {
 
     next.on(ServerToClientEvent.WorldChunks, (payload) => {
       onWorldChunks?.(payload.chunks)
+    })
+
+    next.on(ServerToClientEvent.PlayerState, (payload) => {
+      onPlayerState?.(payload)
+    })
+
+    next.on(ServerToClientEvent.NodeDetected, (payload) => {
+      onNodeDetected?.(payload)
+    })
+
+    next.on(ServerToClientEvent.NodeUpdated, (payload) => {
+      onNodeUpdated?.(payload)
+    })
+
+    next.on(ServerToClientEvent.PlayerScanned, (payload) => {
+      onPlayerScanned?.(payload)
+    })
+
+    next.on(ServerToClientEvent.PlayerScanRejected, (payload) => {
+      onPlayerScanRejected?.(payload)
+    })
+
+    next.on(ServerToClientEvent.ExcavationStarted, (payload) => {
+      onExcavationStarted?.(payload)
+    })
+
+    next.on(ServerToClientEvent.ExcavationRejected, (payload) => {
+      onExcavationRejected?.(payload)
+    })
+
+    next.on(ServerToClientEvent.ExcavationUpdate, (payload) => {
+      onExcavationUpdate?.(payload)
+    })
+
+    next.on(ServerToClientEvent.InventoryUpdate, (payload) => {
+      inventory.value = [...payload.items]
+      onInventoryUpdate?.(payload)
     })
 
     next.on("disconnect", () => {
@@ -174,7 +320,12 @@ export function useGameSession(options?: {
     lastError,
     worldId,
     spawn,
+    inventory,
     requestChunks,
+    sendInput,
+    sendScan,
+    sendExcavationStart,
+    sendExcavationHit,
     connect,
     disconnect,
   }

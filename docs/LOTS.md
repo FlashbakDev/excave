@@ -2,7 +2,7 @@
 
 Document de reprise pour continuer le POC sur une autre machine.
 
-**Dernière progression connue :** LOT 3 terminé. Prochain lot à faire : **LOT 4**.
+**Dernière progression connue :** LOT 9 terminé — POC jouable. Prochain : **LOT 10 (polish)** — aucune nouvelle feature.
 
 Boucle POC à valider au lot 9 :
 
@@ -215,27 +215,21 @@ NUXT_PUBLIC_SOCKET_URL=http://127.0.0.1:3001
 
 Note : le port hôte Postgres est **5433** pour éviter les conflits avec un Postgres local sur 5432. Si la DB est injoignable, le serveur fallback en seed mémoire (log + continue).
 
-### Où en est le code (après LOT 3)
+### Où en est le code (après LOT 9)
 
 Présent :
 
-- monorepo pnpm
-- Nuxt 4 + Pixi scène `/game`
-- Socket.IO session invité + ping HUD
-- monde déterministe chunks FLOOR/WALL
-- table `worlds` (id, seed, createdAt)
-- events `world:join` / `world:joined` / `world:chunkRequest` / `world:chunks`
-- exploration locale ZQSD/WASD (collision locale uniquement)
+- monorepo + Pixi + Socket.IO + monde + AOI + mouvement autoritaire
+- filons + SCAN + concurrence
+- overlay excavation + moteur autoritaire (trésors, métal, recovery)
+- persistence loot Postgres (`players`, `player_items`, `excavation_nodes`, `excavation_history`)
+- inventaire HUD + reprise `playerId` via localStorage
 
-Pas encore :
-
-- mouvement serveur-autoritaire (LOT 4)
-- voir les autres joueurs / AOI (LOT 5)
-- filons, excavation, loot (LOTS 6–9)
+POC checklist manuelle : voir LOT 9.
 
 ### Pour continuer
 
-Dire à l’agent : **`continue`** → il doit enchaîner uniquement sur le **LOT 4**.
+Dire à l’agent : **`continue`** → il doit enchaîner uniquement sur le **LOT 10 (polish)**.
 
 Docs liées :
 
@@ -407,7 +401,7 @@ Ne pas stocker tous les tiles s’ils sont reproductibles depuis le seed.
 
 ## LOT 4 — Déplacement serveur-autoritaire
 
-**Statut : À FAIRE (prochain)**
+**Statut : FAIT**
 
 ### Objectif
 
@@ -463,7 +457,7 @@ Aujourd’hui le client a encore un mouvement **local** Lot 3. Le Lot 4 doit le 
 
 ## LOT 5 — Multijoueur localisé / Area of Interest
 
-**Statut : À FAIRE**
+**Statut : FAIT**
 
 ### Objectif
 
@@ -505,7 +499,7 @@ C’est à ce lot que « je ne vois pas l’autre joueur » devient un bug s’i
 
 ## LOT 6 — Filons et détection
 
-**Statut : À FAIRE**
+**Statut : FAIT**
 
 ### Objectif
 
@@ -529,9 +523,11 @@ Statuses min : `AVAILABLE` | `IN_PROGRESS` | `DEPLETED`
 ### Détection
 
 - Action `SCAN` (desktop : `E` ou `Space`)
-- Serveur vérifie rayon
+- Serveur vérifie rayon + cooldown (`SCAN_COOLDOWN_MS`)
+- Toujours : `player:scanned` (cercle de portée côté client)
 - Si proche : `node:detected`
-- Client : scintillement / marque / message « Quelque chose semble être enfoui ici »
+- Si cooldown : `player:scanRejected`
+- Client : anneau de scan + scintillement / marque / message
 - Puis `E` → `excavation:start`
 - Serveur valide : node existe, `AVAILABLE`, portée, monde
 
@@ -550,7 +546,7 @@ Deux joueurs sur le même filon → un seul obtient la session.
 
 ## LOT 7 — Interface du mini-jeu d’excavation
 
-**Statut : À FAIRE**
+**Statut : FAIT**
 
 ### Objectif
 
@@ -605,7 +601,7 @@ Après interface branchée à des réponses serveur simples (moteur complet = Lo
 
 ## LOT 8 — Moteur d’excavation autoritaire
 
-**Statut : À FAIRE (lot le plus important)**
+**Statut : FAIT**
 
 ### Objectif
 
@@ -613,7 +609,7 @@ Mini-jeu réellement serveur.
 
 Créer **server-only** :
 
-- `ExcavationManager`
+- `ExcavationManager` → `ExcavationSessionManager`
 - `ExcavationSession`
 - `ExcavationGenerator`
 - `ExcavationHitResolver`
@@ -656,6 +652,7 @@ excavation:update {
   changedCells,
   stability,
   newlyRecoveredTreasures,
+  recoveredTreasures,
   status
 }
 ```
@@ -669,11 +666,15 @@ Trésor récupéré quand **toutes** ses cellules sont dégagées → message + 
 - `stability <= 0` → `COLLAPSED` ; loot déjà récupéré conservé ; autres perdus ; node `DEPLETED`
 - Tous trésors récupérés → `COMPLETED` ; node `DEPLETED`
 
+### STOP
+
+Après tests déterminisme / secrets absents des DTOs. Persistence = Lot 9.
+
 ---
 
 ## LOT 9 — Persistence du loot et fin du POC
 
-**Statut : À FAIRE**
+**Statut : FAIT**
 
 ### Tables min
 
@@ -691,9 +692,11 @@ Pas d’équipement / poids / slots / drag & drop / marché.
 Transaction Postgres atomique :
 
 - état final du node
-- historique
+- historique (`session_id` unique → pas de double attribution)
 - attribution trésors
-- fin de session
+- fin de session + `inventory:update`
+
+Guest : `playerId` repris via `localStorage` + `socket.auth.playerId`.
 
 ### UI
 
@@ -741,20 +744,88 @@ Ammonite x1
 21. Restart serveur  
 22. Monde + loot persistants  
 
-Après le lot 9 : **STOP du travail actuel**. Ne pas commencer bases / CTF / guildes / combat / économie / progression.
+Après le lot 9 : **STOP du travail feature**. Enchaîner uniquement sur le **LOT 10 (polish)** si demandé.
 
 ---
 
-## Annexe A — Constantes actuelles (Lot 3)
+## LOT 10 — Polish POC (pas de nouvelles features)
+
+**Statut : À FAIRE (prochain)**
+
+### Objectif
+
+Rendre le POC plus **propre, lisible et agréable** sans élargir le scope produit.
+
+**Interdit dans ce lot** : nouvelles mécaniques, nouveaux events réseau « feature », nouveaux systèmes (auth réelle, craft, économie, bases, combat, UI inventaire avancée, etc.).
+
+### Périmètre autorisé
+
+#### 1. UX / feedback déjà présents
+
+- Textes HUD / overlay / inventaire : labels, hiérarchie, contrastes, spacing
+- Messages joueur plus clairs (scan, reject, recovery, collapse) — **mêmes événements**
+- Feedback excavation déjà là : shake, couleurs roche/métal, stabilité — peaufiner seulement
+- Responsive overlay (déjà prévu Lot 7) : petits correctifs layout mobile
+- Page `/game` / accueil : textes à jour (plus de « Lot 7 » résiduels)
+
+#### 2. Qualité code / dette technique légère
+
+- Renommer / regrouper fichiers confus **sans** changer le comportement
+- Extraire helpers évidents (ex. constantes UI locales, labels d’erreur)
+- Aligner noms Lot 8/9 dans comments / README / annexes LOTS
+- Corriger typos, commentaires obsolètes (« stub », « Lot 7 »)
+
+#### 3. Tests & robustesse (comportement existant)
+
+- Couvrir un trou de test utile déjà dans le scope (ex. reprise `playerId`, finalize idempotent déjà partiel)
+- Stabiliser flaky éventuels
+- Améliorer messages d’assert / fixtures — pas de nouveaux chemins métier
+
+#### 4. Docs
+
+- Synchroniser annexes PROTOCOL / LOTS avec l’état réel (inventory, debug inventory)
+- Checklist manuelle polish courte dans le compte rendu
+
+### Hors scope explicite
+
+- Nouveaux trésors / outils / kernels
+- Sons, particules élaborées, animations de personnage
+- Skins, noms joueur, chat
+- Auth, comptes, migration lourde ORM
+- Perf « scaling » (Redis, sharding, etc.)
+
+### Critères de fin
+
+- Aucune nouvelle feature jouable
+- `pnpm typecheck` / `test` / `build` verts
+- Boucle POC inchangée mais plus claire à l’œil
+- Docs à jour + compte rendu + **STOP**
+
+### STOP
+
+Après polish validé. Toute feature post-POC = nouveau lot nommé et approuvé.
+
+---
+
+## Annexe A — Constantes actuelles (Lot 5)
 
 Dans `@excave/shared` :
 
 - `TILE_SIZE = 32`
 - `CHUNK_SIZE = 32`
 - `DEFAULT_WORLD_ID = "main"`
-- `WORLD_ROOM_PERIOD = 16` (générateur pièces/couloirs)
+- `WORLD_ROOM_PERIOD = 16`
+- `PLAYER_SPEED_PX_PER_SEC = 140`
+- `SIM_TICK_HZ = 20`
+- `STATE_BROADCAST_HZ = 10`
+- `AOI_RADIUS = 1`
+- `SCAN_RANGE_PX = TILE_SIZE * 2.5`
+- `SCAN_COOLDOWN_MS = 2000`
+- `EXCAVATION_RANGE_PX = TILE_SIZE * 1.5`
 
 Tiles publics : `FLOOR = 0`, `WALL = 1`
+
+Rooms : `world:{worldId}:chunk:{x}:{y}`
 
 ---
 
@@ -780,8 +851,10 @@ Tiles publics : `FLOOR = 0`, `WALL = 1`
 | S→C | `world:joined` | spawn + chunks 3×3 |
 | C→S | `world:chunkRequest` | chunks manquants |
 | S→C | `world:chunks` | payloads tiles |
+| C→S | `player:input` | intent mouvement |
+| S→C | `player:state` | snapshot joueurs |
 
-À ajouter aux lots suivants : inputs, snapshots, AOI, nodes, excavation hits/updates, inventaire.
+À ajouter aux lots suivants : AOI rooms, nodes, excavation hits/updates, inventaire.
 
 ---
 
@@ -792,7 +865,9 @@ apps/web/
   app/pages/index.vue
   app/pages/game.vue
   app/components/GameCanvas.client.vue
+  app/components/excavation/{ExcavationOverlay,ExcavationGrid,ExcavationToolbar,ExcavationStability}.vue
   app/composables/useGameSession.ts
+  app/game/input/{MovementInput,InteractionInput}.ts
   app/game/renderer/{GameRenderer,Camera,WorldContainer}.ts
 
 apps/server/
@@ -800,15 +875,22 @@ apps/server/
   src/index.ts
   src/realtime/socket.ts
   src/session/PlayerRegistry.ts
+  src/aoi/AreaOfInterestManager.ts
+  src/excavation/{ExcavationNodeManager,ExcavationSessionManager,ExcavationGenerator,ExcavationHitResolver,TreasureCatalog,generateNodes}.ts
+  src/player/{PlayerRuntimeStore,GameLoop,PlayerRuntimeState}.ts
   src/world/{generator,Chunk,ChunkManager,WorldManager}.ts
-  src/db/{schema,client,worldBootstrap}.ts
+  src/db/{schema,client,worldBootstrap,migrate,PersistenceStore}.ts
 
 packages/shared/
   src/constants.ts
+  src/aoi.ts
+  src/movement.ts
   src/ids.ts
   src/world/{tiles,chunk}.ts
-  src/net/{events,payloads,worldPayloads}.ts
+  src/net/{events,payloads,worldPayloads,playerPayloads,nodePayloads,treasurePayloads,inventoryPayloads}.ts
 ```
+
+apps/web also : `app/components/InventoryPanel.vue`
 
 ---
 

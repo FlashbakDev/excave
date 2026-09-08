@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/health.test.ts src/session/PlayerRegistry.test.ts src/realtime/socket.test.ts src/world/generator.test.ts",
+    "test": "tsx --test src/health.test.ts src/session/PlayerRegistry.test.ts src/realtime/socket.test.ts src/world/generator.test.ts src/player/PlayerRuntimeStore.test.ts src/aoi/AreaOfInterestManager.test.ts src/excavation/ExcavationNodeManager.test.ts src/excavation/ExcavationSessionManager.test.ts src/db/PersistenceStore.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio"
   },

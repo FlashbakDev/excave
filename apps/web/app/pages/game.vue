@@ -4,7 +4,7 @@
       <NuxtLink class="back" to="/">← Accueil</NuxtLink>
       <div class="titles">
         <h1>Souterrain</h1>
-        <p>Monde chunké déterministe (Lot 3)</p>
+        <p>Filons, excavation & inventaire (Lot 9)</p>
       </div>
     </header>
 

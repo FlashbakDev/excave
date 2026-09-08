@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/ids.test.ts src/net/events.test.ts"
+    "test": "tsx --test src/ids.test.ts src/net/events.test.ts src/movement.test.ts src/aoi.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.5",

@@ -6,10 +6,17 @@ import {
   TILE_SIZE,
 } from "@excave/shared"
 import { createDatabase, type Database } from "./db/client.js"
+import { ensureSchema } from "./db/migrate.js"
+import { PersistenceStore } from "./db/PersistenceStore.js"
 import {
   createWorldManagerFromSeed,
   ensureMainWorld,
 } from "./db/worldBootstrap.js"
+import { GameLoop } from "./player/GameLoop.js"
+import { PlayerRuntimeStore } from "./player/PlayerRuntimeStore.js"
+import { AreaOfInterestManager } from "./aoi/AreaOfInterestManager.js"
+import { ExcavationNodeManager } from "./excavation/ExcavationNodeManager.js"
+import { ExcavationSessionManager } from "./excavation/ExcavationSessionManager.js"
 import { attachSocketIO, type GameSocketServer } from "./realtime/socket.js"
 import { PlayerRegistry } from "./session/PlayerRegistry.js"
 import type { WorldManager } from "./world/WorldManager.js"
@@ -17,6 +24,11 @@ import type { WorldManager } from "./world/WorldManager.js"
 export interface BuiltServer {
   app: FastifyInstance
   registry: PlayerRegistry
+  runtimes: PlayerRuntimeStore
+  nodes: ExcavationNodeManager
+  sessions: ExcavationSessionManager
+  persistence: PersistenceStore
+  gameLoop: GameLoop | null
   world: WorldManager
   io: GameSocketServer | null
   db: Database | null
@@ -28,6 +40,7 @@ export async function buildServer(options?: {
   corsOrigins?: string[]
   databaseUrl?: string | null
   worldSeed?: string
+  startGameLoop?: boolean
 }): Promise<BuiltServer> {
   const app = Fastify({
     logger: options?.logger ?? true,
@@ -45,7 +58,7 @@ export async function buildServer(options?: {
   if (databaseUrl) {
     try {
       db = createDatabase(databaseUrl)
-      await ensureWorldsTable(db.client)
+      await ensureSchema(db.client)
       world = await ensureMainWorld(db.db, options?.worldSeed)
       app.log.info(
         { worldId: world.id, seed: world.seedString },
@@ -72,6 +85,18 @@ export async function buildServer(options?: {
     )
   }
 
+  const persistence = new PersistenceStore(db?.db ?? null)
+  const runtimes = new PlayerRuntimeStore(world)
+  const aoi = new AreaOfInterestManager(world.id)
+  const nodes = new ExcavationNodeManager(world)
+  const sessions = new ExcavationSessionManager()
+
+  const depleted = await persistence.listDepletedNodeIds(world.id)
+  nodes.hydrateDepleted(depleted)
+  if (depleted.length > 0) {
+    app.log.info({ count: depleted.length }, "hydrated depleted excavation nodes")
+  }
+
   app.get("/health", async () => {
     return {
       status: "ok" as const,
@@ -82,12 +107,29 @@ export async function buildServer(options?: {
   app.get("/debug/players", async () => {
     return {
       count: registry.count(),
-      players: registry.list().map((player) => ({
-        playerId: player.playerId,
-        socketId: player.socketId,
-        connectedAt: player.connectedAt,
-      })),
+      players: registry.list().map((player) => {
+        const runtime = runtimes.get(player.playerId)
+        const rooms = runtime ? aoi.roomsFor(runtime.currentChunk) : []
+        return {
+          playerId: player.playerId,
+          socketId: player.socketId,
+          connectedAt: player.connectedAt,
+          position: runtime?.position ?? null,
+          chunk: runtime?.currentChunk ?? null,
+          aoiRooms: rooms,
+        }
+      }),
     }
+  })
+
+  app.get<{
+    Params: { playerId: string }
+  }>("/debug/inventory/:playerId", async (request, reply) => {
+    const playerId = request.params.playerId
+    if (!playerId) {
+      return reply.code(400).send({ error: "invalid_player" })
+    }
+    return persistence.getInventory(playerId as never)
   })
 
   app.get<{
@@ -100,6 +142,31 @@ export async function buildServer(options?: {
     }
 
     return world.getChunkPayload({ x: chunkX, y: chunkY })
+  })
+
+  app.get<{
+    Params: { x: string; y: string }
+  }>("/debug/nodes/:x/:y", async (request, reply) => {
+    const chunkX = Number(request.params.x)
+    const chunkY = Number(request.params.y)
+    if (!Number.isInteger(chunkX) || !Number.isInteger(chunkY)) {
+      return reply.code(400).send({ error: "invalid_chunk" })
+    }
+
+    const list = nodes.ensureChunk({ x: chunkX, y: chunkY })
+    return {
+      chunk: { x: chunkX, y: chunkY },
+      count: list.length,
+      nodes: list.map((node) => ({
+        id: node.id,
+        tileX: node.tileX,
+        tileY: node.tileY,
+        wallSide: node.wallSide,
+        status: node.status,
+        activePlayerId: node.activePlayerId,
+        // seed intentionally omitted from debug public surface for safety habit
+      })),
+    }
   })
 
   app.get("/debug/world", async () => {
@@ -115,6 +182,7 @@ export async function buildServer(options?: {
 
   const enableRealtime = options?.enableRealtime ?? true
   let io: GameSocketServer | null = null
+  let gameLoop: GameLoop | null = null
 
   if (enableRealtime) {
     await app.ready()
@@ -122,21 +190,29 @@ export async function buildServer(options?: {
       app,
       registry,
       world,
+      runtimes,
+      aoi,
+      nodes,
+      sessions,
+      persistence,
       options?.corsOrigins ? { corsOrigins: options.corsOrigins } : undefined,
     )
+    gameLoop = new GameLoop(runtimes, io, registry, aoi)
+    if (options?.startGameLoop ?? true) {
+      gameLoop.start()
+    }
   }
 
-  return { app, registry, world, io, db }
-}
-
-async function ensureWorldsTable(
-  client: Database["client"],
-): Promise<void> {
-  await client`
-    CREATE TABLE IF NOT EXISTS worlds (
-      id text PRIMARY KEY NOT NULL,
-      seed text NOT NULL,
-      created_at timestamptz DEFAULT now() NOT NULL
-    )
-  `
+  return {
+    app,
+    registry,
+    runtimes,
+    nodes,
+    sessions,
+    persistence,
+    gameLoop,
+    world,
+    io,
+    db,
+  }
 }
