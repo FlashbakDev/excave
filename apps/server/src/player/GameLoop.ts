@@ -11,6 +11,9 @@ import type { PlayerRegistry } from "../session/PlayerRegistry.js"
 import type { PlayerRuntimeStore } from "./PlayerRuntimeStore.js"
 
 const SIM_INTERVAL_MS = 1000 / SIM_TICK_HZ
+const SIM_STEP_SECONDS = 1 / SIM_TICK_HZ
+const MAX_CATCH_UP_TICKS = 5
+const MAX_ACCUMULATED_TIME_MS = 1000
 const BROADCAST_EVERY_N_TICKS = Math.max(
   1,
   Math.round(SIM_TICK_HZ / STATE_BROADCAST_HZ),
@@ -20,6 +23,9 @@ export class GameLoop {
   private timer: ReturnType<typeof setInterval> | null = null
   private tick = 0
   private running = false
+  private lastTimerAtMs = 0
+  private accumulatorMs = 0
+  private droppedTimeMs = 0
 
   constructor(
     private readonly store: PlayerRuntimeStore,
@@ -33,8 +39,14 @@ export class GameLoop {
       return
     }
     this.running = true
+    this.lastTimerAtMs = performance.now()
+    this.accumulatorMs = 0
+    this.droppedTimeMs = 0
     this.timer = setInterval(() => {
-      this.step()
+      const now = performance.now()
+      const elapsedMs = Math.max(0, now - this.lastTimerAtMs)
+      this.lastTimerAtMs = now
+      this.advance(elapsedMs)
     }, SIM_INTERVAL_MS)
     if (typeof this.timer === "object" && "unref" in this.timer) {
       this.timer.unref()
@@ -43,16 +55,44 @@ export class GameLoop {
 
   stop(): void {
     this.running = false
+    this.lastTimerAtMs = 0
+    this.accumulatorMs = 0
     if (this.timer) {
       clearInterval(this.timer)
       this.timer = null
     }
   }
 
-  /** Exposed for tests. */
+  /** Advances wall-clock time through deterministic fixed simulation steps. */
+  advance(elapsedMs: number): number {
+    this.accumulatorMs += Math.max(0, elapsedMs)
+    if (this.accumulatorMs > MAX_ACCUMULATED_TIME_MS) {
+      this.droppedTimeMs += this.accumulatorMs - MAX_ACCUMULATED_TIME_MS
+      this.accumulatorMs = MAX_ACCUMULATED_TIME_MS
+    }
+    let steps = 0
+    while (
+      this.accumulatorMs >= SIM_INTERVAL_MS &&
+      steps < MAX_CATCH_UP_TICKS
+    ) {
+      this.accumulatorMs -= SIM_INTERVAL_MS
+      this.step()
+      steps += 1
+    }
+    return steps
+  }
+
+  getTimingStats(): { accumulatorMs: number; droppedTimeMs: number } {
+    return {
+      accumulatorMs: this.accumulatorMs,
+      droppedTimeMs: this.droppedTimeMs,
+    }
+  }
+
+  /** Exposed for deterministic tests. */
   step(): void {
     this.tick += 1
-    const changes = this.store.tick(SIM_INTERVAL_MS / 1000)
+    const changes = this.store.tick(SIM_STEP_SECONDS, this.tick)
     this.applyChunkRoomChanges(changes)
 
     if (this.tick % BROADCAST_EVERY_N_TICKS === 0) {

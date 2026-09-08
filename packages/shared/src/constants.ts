@@ -14,15 +14,24 @@ export const WORLD_ROOM_PERIOD = 16
 export const PLAYER_SPEED_PX_PER_SEC = 140
 
 /**
- * Collision footprint (world px) around feet — matches ~16×16×2 explorer body.
- * halfWidth keeps shoulders clear of wall tiles; bodyHeight covers torso north.
+ * Collision footprint matching the explorer's visible lower body.
+ * Source lower body is 6×5 px, displayed ×2, with feet at logical position.
  */
-export const PLAYER_COLLISION_HALF_WIDTH_PX = 11
-export const PLAYER_COLLISION_BODY_HEIGHT_PX = 14
-export const PLAYER_COLLISION_FOOT_PAD_PX = 2
+export const PLAYER_COLLISION_HALF_WIDTH_PX = 6
+export const PLAYER_COLLISION_BODY_HEIGHT_PX = 10
+export const PLAYER_COLLISION_FOOT_PAD_PX = 0
 
 /** Server simulation rate. */
 export const SIM_TICK_HZ = 20
+
+/** Fixed client movement commands generated and replayed per second. */
+export const MOVEMENT_COMMAND_HZ = 60
+
+/** Maximum unacknowledged movement history retained by a client. */
+export const MOVEMENT_MAX_PENDING_COMMANDS = MOVEMENT_COMMAND_HZ * 6
+
+/** Hard server queue limit per player. */
+export const MOVEMENT_MAX_SERVER_QUEUE = MOVEMENT_COMMAND_HZ * 2
 
 /** Authoritative player state broadcast rate. */
 export const STATE_BROADCAST_HZ = 10

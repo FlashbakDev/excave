@@ -54,27 +54,27 @@ describe("resolveWallFaceOverlays", () => {
     assert.deepEqual(resolveWallFaceOverlays(0), [])
   })
 
-  it("maps south cliff and east/west faces", () => {
+  it("maps south cliffs and skips east/west side lips", () => {
     assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.S), ["wall_face_s"])
-    assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.E), ["wall_face_e"])
-    assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.W), ["wall_face_w"])
+    assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.E), [])
+    assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.W), [])
   })
 
-  it("uses dedicated L tiles for outer SE/SW", () => {
+  it("uses a south cliff only for outer SE/SW", () => {
     assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.S | OpenNeighbor.E), [
-      "wall_corner_se",
+      "wall_face_s",
     ])
     assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.S | OpenNeighbor.W), [
-      "wall_corner_sw",
+      "wall_face_s",
     ])
   })
 
-  it("maps inner SE/SW when south is open but the side is blocked", () => {
+  it("keeps a full-width south cliff at inner SE/SW junctions", () => {
     assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.S | OpenNeighbor.SE), [
-      "wall_inner_se",
+      "wall_face_s",
     ])
     assert.deepEqual(resolveWallFaceOverlays(OpenNeighbor.S | OpenNeighbor.SW), [
-      "wall_inner_sw",
+      "wall_face_s",
     ])
   })
 
@@ -124,7 +124,7 @@ describe("resolveTerrainPlacements", () => {
     assert.ok(p.some((x) => x.textureId === "wall_face_s"))
   })
 
-  it("uses dedicated SE corner tile for outer SE", () => {
+  it("uses a south cliff only for outer SE", () => {
     const map = new Map<string, number>([
       ["1:1", TileType.Wall],
       ["1:2", TileType.Floor],
@@ -133,14 +133,14 @@ describe("resolveTerrainPlacements", () => {
     const neighbor = (x: number, y: number) =>
       map.get(`${x}:${y}`) ?? TileType.Wall
     const p = resolveTerrainPlacements(1, 1, TileType.Wall, neighbor)
-    assert.ok(p.some((x) => x.textureId === "wall_corner_se"))
+    assert.ok(p.some((x) => x.textureId === "wall_face_s"))
     assert.equal(
       p.filter((x) => x.layer === "wallFace").length,
       1,
     )
   })
 
-  it("places an inner SE face at a T-junction wall", () => {
+  it("places a full south face at a T-junction wall", () => {
     const map = new Map<string, number>([
       ["1:1", TileType.Wall],
       ["1:2", TileType.Floor],
@@ -150,7 +150,7 @@ describe("resolveTerrainPlacements", () => {
     const neighbor = (x: number, y: number) =>
       map.get(`${x}:${y}`) ?? TileType.Wall
     const p = resolveTerrainPlacements(1, 1, TileType.Wall, neighbor)
-    assert.ok(p.some((x) => x.textureId === "wall_inner_se"))
+    assert.ok(p.some((x) => x.textureId === "wall_face_s"))
   })
 
   it("keeps void for diagonal-only exposure", () => {
@@ -164,7 +164,7 @@ describe("resolveTerrainPlacements", () => {
     assert.deepEqual(p, [])
   })
 
-  it("places an east face when floor is east of wall", () => {
+  it("keeps only the wall top when floor is east of a vertical wall", () => {
     const map = new Map<string, number>([
       ["0:0", TileType.Wall],
       ["1:0", TileType.Floor],
@@ -172,7 +172,9 @@ describe("resolveTerrainPlacements", () => {
     const neighbor = (x: number, y: number) =>
       map.get(`${x}:${y}`) ?? TileType.Wall
     const p = resolveTerrainPlacements(0, 0, TileType.Wall, neighbor)
-    assert.ok(p.some((x) => x.textureId === "wall_face_e"))
+    assert.equal(p.length, 1)
+    assert.equal(p[0]!.layer, "wallTop")
+    assert.ok(!p.some((x) => x.layer === "wallFace"))
   })
 
   it("stays stable across a fake chunk seam (world coords)", () => {

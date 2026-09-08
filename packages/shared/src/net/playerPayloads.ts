@@ -1,12 +1,18 @@
 import type { PlayerId } from "../ids.js"
 
-/** Client → server movement intent (no absolute position). */
-export interface PlayerInputPayload {
+/** One deterministic, fixed-duration movement command. */
+export interface PlayerMovementCommand {
   up: boolean
   down: boolean
   left: boolean
   right: boolean
   sequence: number
+}
+
+/** Client → server ordered command batch (never contains absolute position). */
+export interface PlayerInputPayload {
+  movementEpoch: string
+  commands: PlayerMovementCommand[]
 }
 
 /** One player in a server state snapshot. */
@@ -18,7 +24,9 @@ export interface PlayerStateEntry {
   vy: number
   chunkX: number
   chunkY: number
+  movementEpoch: string
   lastProcessedSequence: number
+  lastProcessedTick: number
 }
 
 /** Server → client authoritative movement snapshot. */

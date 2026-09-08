@@ -41,11 +41,12 @@ export const CHARACTER_CONFIG = {
    */
   diagonalBias: 1.2,
   /**
-   * Sprite anchor: feet at logical position (collision point).
-   * Character draws upward from gameplay (x, y).
+   * The source frame has five transparent rows below the visible feet.
+   * Anchor on the first transparent row so visible feet match the logical
+   * position and the collision footprint.
    */
   anchorX: 0.5,
-  anchorY: 1,
+  anchorY: 11 / EXPLORER_FRAME_SIZE,
   /**
    * Lamp overlay focus offset from feet toward helmet (world px, unzoomed).
    * Negative Y = up in world space.

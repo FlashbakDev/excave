@@ -3,13 +3,13 @@ import {
   AOI_RADIUS,
   EXCAVATION_RANGE_PX,
   SIM_TICK_HZ,
-  stepMovement,
   type ChunkCoordinate,
   type ChunkPayload,
   type ExcavationNodeId,
   type MovementButtons,
   type NodeDetectedPayload,
   type NodeUpdatedPayload,
+  type PlayerInputPayload,
   type PlayerStateEntry,
   type PlayerStatePayload,
   type WorldPosition,
@@ -28,7 +28,9 @@ import {
 } from "../world"
 import { Camera } from "./Camera"
 import { WORLD_BACKGROUND } from "./constants"
-import { planLocalReconcile } from "./localReconcile"
+import { LocalMovementController } from "./LocalMovementController"
+import { RemoteSnapshotBuffer } from "./RemoteSnapshotBuffer"
+import { VisualPositionSmoother } from "./VisualPositionSmoother"
 import { WorldContainer } from "./WorldContainer"
 
 export interface GameRendererStats {
@@ -43,20 +45,33 @@ export interface GameRendererStats {
   zoom: CameraZoomLevel
 }
 
+export interface MovementDebugSnapshot {
+  enabled: boolean
+  input: MovementButtons
+  predicted: WorldPosition
+  authoritative: WorldPosition | null
+  render: WorldPosition
+  camera: WorldPosition
+  predictionErrorPx: number | null
+  acknowledgedErrorPx: number | null
+  snapshotAgeMs: number | null
+  snapshotHz: number | null
+  renderDtMs: number
+  simulationDtMs: number | null
+  reconcileAction: "none" | "apply"
+  pendingInputCount: number
+  visualErrorPx: number
+  remoteInterpolationDelayMs: number | null
+}
+
 export type GameRendererStatsListener = (stats: GameRendererStats) => void
+export type MovementDebugListener = (snapshot: MovementDebugSnapshot) => void
 export type ChunkRequestListener = (chunks: ChunkCoordinate[]) => void
-export type InputSendListener = (buttons: MovementButtons, sequence: number) => void
+export type InputSendListener = (payload: PlayerInputPayload) => void
 export type ScanListener = () => void
 export type ExcavationStartListener = (nodeId: ExcavationNodeId) => void
 
-const INPUT_SEND_INTERVAL_MS = 1000 / SIM_TICK_HZ
-
-interface RemoteSample {
-  from: WorldPosition
-  to: WorldPosition
-  fromTime: number
-  toTime: number
-}
+const INPUT_BATCH_INTERVAL_MS = 1000 / SIM_TICK_HZ
 
 /**
  * Owns the Pixi Application lifecycle for the underground world view.
@@ -71,6 +86,7 @@ export class GameRenderer {
   private host: HTMLElement | null = null
   private resizeObserver: ResizeObserver | null = null
   private statsListener: GameRendererStatsListener | null = null
+  private movementDebugListener: MovementDebugListener | null = null
   private chunkRequestListener: ChunkRequestListener | null = null
   private inputSendListener: InputSendListener | null = null
   private scanListener: ScanListener | null = null
@@ -78,34 +94,43 @@ export class GameRenderer {
   private fps = 0
   private destroyed = false
   private readonly movement = new MovementInput()
+  private readonly localMovement = new LocalMovementController()
+  private readonly localVisual = new VisualPositionSmoother()
   private readonly interaction = new InteractionInput()
   private lastChunkKey = ""
   private localPlayerId: string | null = null
-  private inputSequence = 0
-  private lastSentButtons: MovementButtons = {
-    up: false,
-    down: false,
-    left: false,
-    right: false,
-  }
   private inputAccumMs = 0
   private joined = false
-  private readonly remotes = new Map<string, RemoteSample>()
+  private networkConnected = true
+  private readonly remotes = new Map<string, RemoteSnapshotBuffer>()
   private movementLocked = false
-  /** Last time a movement key was held — grace window avoids idle settle rubber-band. */
-  private lastMoveInputAtMs = 0
-  /** Smoothed one-way latency estimate from session pongs (seconds). */
-  private oneWayLatencySec = 0.05
   /** Dev fixed cave map — skips network world / decor; lighting optional. */
   private terrainTestMode = false
   /** Lamp overlay — off for now while terrain relief is validated. */
   private lightingEnabled = false
+  private movementDebugEnabled = false
+  private lastPredictedPosition: WorldPosition = { x: 0, y: 0 }
+  private lastAuthoritativePosition: WorldPosition | null = null
+  private lastSnapshotAtMs = 0
+  private snapshotIntervalsMs: number[] = []
+  private lastSnapshotServerTime = 0
+  private lastSnapshotTick = 0
+  private simulationDtMs: number | null = null
+  private renderDtMs = 0
+  private lastReconcileAction: "none" | "apply" = "none"
+  private lastAcknowledgedErrorPx: number | null = null
 
   private readonly onZoomKeyDown = (event: KeyboardEvent): void => {
     if (event.repeat || !this.camera) {
       return
     }
 
+    if (event.code === "F3" && import.meta.dev) {
+      event.preventDefault()
+      this.movementDebugEnabled = !this.movementDebugEnabled
+      this.emitMovementDebug()
+      return
+    }
     if (this.terrainTestMode) {
       if (event.code === "KeyC") {
         event.preventDefault()
@@ -135,15 +160,23 @@ export class GameRenderer {
     }
 
     const deltaMS = this.app.ticker.deltaMS
+    this.renderDtMs = deltaMS
     if (deltaMS > 0) {
       this.fps = 1000 / deltaMS
     }
 
     if (this.joined) {
-      if (!this.movementLocked) {
-        this.predictLocalMovement(deltaMS / 1000)
+      if (this.networkConnected) {
+        if (!this.movementLocked) {
+          this.predictLocalMovement(deltaMS)
+        }
         this.flushInput(deltaMS)
       }
+      const visualPosition = this.localVisual.resolve(
+        this.localMovement.getPosition(),
+        deltaMS,
+      )
+      this.world.setPlayerPosition(visualPosition)
       this.handleInteraction()
       this.world.tickNodes(deltaMS / 1000)
       this.interpolateRemotes()
@@ -153,6 +186,7 @@ export class GameRenderer {
     this.updateLighting()
     this.maybeRequestChunks()
     this.emitStats()
+    this.emitMovementDebug()
   }
 
   async mount(host: HTMLElement): Promise<void> {
@@ -232,6 +266,11 @@ export class GameRenderer {
     this.emitStats()
   }
 
+  onMovementDebug(listener: MovementDebugListener | null): void {
+    this.movementDebugListener = listener
+    this.emitMovementDebug()
+  }
+
   onChunkRequest(listener: ChunkRequestListener | null): void {
     this.chunkRequestListener = listener
   }
@@ -253,29 +292,51 @@ export class GameRenderer {
   }
 
   setMovementLocked(locked: boolean): void {
+    if (
+      locked &&
+      !this.movementLocked &&
+      this.world &&
+      this.networkConnected
+    ) {
+      this.localMovement.queueImmediate(
+        { up: false, down: false, left: false, right: false },
+        (position) => this.world!.isWalkableAt(position),
+      )
+      const batch = this.localMovement.takeBatch(true)
+      if (batch) {
+        this.inputSendListener?.(batch)
+      }
+    }
     this.movementLocked = locked
+  }
+
+  setNetworkConnected(connected: boolean): void {
+    this.networkConnected = connected
   }
 
   setLocalPlayerId(playerId: string | null): void {
     this.localPlayerId = playerId
   }
 
-  /** Update RTT estimate from session ping (ms round-trip). */
-  setRoundTripMs(pingMs: number | null): void {
-    if (pingMs === null || !Number.isFinite(pingMs) || pingMs < 0) {
-      return
-    }
-    this.oneWayLatencySec = Math.min(0.2, Math.max(0.02, pingMs / 2000))
-  }
+  setRoundTripMs(_pingMs: number | null): void {}
 
-  applyWorldJoin(spawn: WorldPosition, chunks: readonly ChunkPayload[]): void {
+  applyWorldJoin(
+    spawn: WorldPosition,
+    chunks: readonly ChunkPayload[],
+    movementEpoch: string,
+    lastProcessedSequence: number,
+  ): void {
     if (!this.world || !this.camera || this.terrainTestMode) {
       // Caller must wait until mount() resolves — see GameCanvas flushPending.
       // Terrain test scene owns the map; ignore live world joins.
       return
     }
     this.world.upsertChunks(chunks)
+    this.localMovement.reset(movementEpoch, lastProcessedSequence, spawn)
+    this.localVisual.reset()
     this.world.setPlayerPosition(spawn, { animate: false })
+    this.lastPredictedPosition = { ...spawn }
+    this.lastAuthoritativePosition = { ...spawn }
     this.camera.setFocus(spawn)
     this.lastChunkKey = ""
     this.joined = true
@@ -310,7 +371,11 @@ export class GameRenderer {
 
     const chunks = buildTerrainTestChunks()
     this.world.upsertChunks(chunks)
+    this.localMovement.reset("terrain-test", 0, TERRAIN_TEST_SPAWN)
+    this.localVisual.reset()
     this.world.setPlayerPosition(TERRAIN_TEST_SPAWN, { animate: false })
+    this.lastPredictedPosition = { ...TERRAIN_TEST_SPAWN }
+    this.lastAuthoritativePosition = { ...TERRAIN_TEST_SPAWN }
     this.camera.setFocus(TERRAIN_TEST_SPAWN)
     this.lastChunkKey = ""
     this.joined = true
@@ -343,32 +408,28 @@ export class GameRenderer {
 
     const activeRemotes = new Set<string>()
     const now = performance.now()
+    this.recordSnapshotTiming(payload, now)
 
     for (const entry of payload.players) {
       if (entry.playerId === this.localPlayerId) {
+        this.lastAuthoritativePosition = { x: entry.x, y: entry.y }
         this.reconcileLocal(entry)
         continue
       }
 
       activeRemotes.add(entry.playerId)
-      const previous = this.remotes.get(entry.playerId)
-      const to = { x: entry.x, y: entry.y }
-      if (previous) {
-        this.remotes.set(entry.playerId, {
-          from: interpolateRemote(previous, now),
-          to,
-          fromTime: now,
-          toTime: now + 1000 / 10,
-        })
-      } else {
-        this.remotes.set(entry.playerId, {
-          from: to,
-          to,
-          fromTime: now,
-          toTime: now,
-        })
-        this.world.setRemotePlayer(entry.playerId, to)
+      let track = this.remotes.get(entry.playerId)
+      if (!track) {
+        track = new RemoteSnapshotBuffer()
+        this.remotes.set(entry.playerId, track)
       }
+      track.push({
+        serverTime: payload.serverTime,
+        receivedAtMs: now,
+        position: { x: entry.x, y: entry.y },
+        velocity: { x: entry.vx, y: entry.vy },
+      })
+      this.world.setRemotePlayer(entry.playerId, { x: entry.x, y: entry.y })
     }
 
     for (const id of [...this.remotes.keys()]) {
@@ -398,6 +459,7 @@ export class GameRenderer {
 
     this.destroyed = true
     this.statsListener = null
+    this.movementDebugListener = null
     this.chunkRequestListener = null
     this.inputSendListener = null
     this.scanListener = null
@@ -405,9 +467,8 @@ export class GameRenderer {
     this.remotes.clear()
     this.joined = false
     this.movementLocked = false
-    this.lastMoveInputAtMs = 0
-    this.oneWayLatencySec = 0.05
-    this.inputSequence = 0
+    this.networkConnected = false
+    this.localVisual.reset()
 
     this.movement.detach()
     this.interaction.detach()
@@ -431,24 +492,17 @@ export class GameRenderer {
     this.host = null
   }
 
-  private predictLocalMovement(dt: number): void {
-    if (!this.world || dt <= 0) {
+  private predictLocalMovement(elapsedMs: number): void {
+    if (!this.world || elapsedMs <= 0) {
       return
     }
 
-    const buttons = this.movement.read()
-    if (buttons.up || buttons.down || buttons.left || buttons.right) {
-      this.lastMoveInputAtMs = performance.now()
-    }
-
-    const current = this.world.getPlayerPosition()
-    const stepped = stepMovement(
-      current,
-      buttons,
-      dt,
+    const predicted = this.localMovement.simulate(
+      elapsedMs,
+      this.movement.read(),
       (position) => this.world!.isWalkableAt(position),
     )
-    this.world.setPlayerPosition(stepped.position)
+    this.lastPredictedPosition = predicted
   }
 
   private reconcileLocal(entry: PlayerStateEntry): void {
@@ -456,26 +510,75 @@ export class GameRenderer {
       return
     }
 
-    // Keep client sequences ahead of server ack after resume / remount.
-    if (entry.lastProcessedSequence > this.inputSequence) {
-      this.inputSequence = entry.lastProcessedSequence
-    }
-
-    const action = planLocalReconcile({
-      current: this.world.getPlayerPosition(),
-      auth: { x: entry.x, y: entry.y },
-      buttons: this.movement.read(),
-      nowMs: performance.now(),
-      lastMoveInputAtMs: this.lastMoveInputAtMs,
-      oneWayLatencySec: this.oneWayLatencySec,
-      isWalkable: (position) => this.world!.isWalkableAt(position),
-    })
-
-    if (action.type === "none") {
+    const previousVisual = this.world.getPlayerPosition()
+    const result = this.localMovement.reconcile(
+      entry,
+      (position) => this.world!.isWalkableAt(position),
+    )
+    if (!result.accepted) {
+      this.lastReconcileAction = "none"
       return
     }
+    this.lastAcknowledgedErrorPx = result.correctionPx
+    this.lastReconcileAction = result.correctionPx > 0.01 ? "apply" : "none"
+    this.localVisual.preserveVisualPosition(previousVisual, result.position)
+    this.lastPredictedPosition = { ...result.position }
+  }
 
-    this.world.setPlayerPosition(action.position, { animate: false })
+  private recordSnapshotTiming(payload: PlayerStatePayload, now: number): void {
+    if (this.lastSnapshotAtMs > 0) {
+      this.snapshotIntervalsMs.push(now - this.lastSnapshotAtMs)
+      if (this.snapshotIntervalsMs.length > 30) {
+        this.snapshotIntervalsMs.shift()
+      }
+    }
+    if (
+      this.lastSnapshotServerTime > 0 &&
+      payload.tick > this.lastSnapshotTick
+    ) {
+      this.simulationDtMs =
+        (payload.serverTime - this.lastSnapshotServerTime) /
+        (payload.tick - this.lastSnapshotTick)
+    }
+    this.lastSnapshotAtMs = now
+    this.lastSnapshotServerTime = payload.serverTime
+    this.lastSnapshotTick = payload.tick
+  }
+
+  private emitMovementDebug(): void {
+    if (!this.movementDebugListener || !this.world || !this.camera) {
+      return
+    }
+    const render = this.world.getPlayerPosition()
+    const auth = this.lastAuthoritativePosition
+    const averageInterval =
+      this.snapshotIntervalsMs.length > 0
+        ? this.snapshotIntervalsMs.reduce((sum, value) => sum + value, 0) /
+          this.snapshotIntervalsMs.length
+        : null
+    this.movementDebugListener({
+      enabled: this.movementDebugEnabled,
+      input: this.movement.read(),
+      predicted: { ...this.lastPredictedPosition },
+      authoritative: auth ? { ...auth } : null,
+      render: { ...render },
+      camera: this.camera.getFocus(),
+      predictionErrorPx: auth
+        ? Math.hypot(render.x - auth.x, render.y - auth.y)
+        : null,
+      acknowledgedErrorPx: this.lastAcknowledgedErrorPx,
+      snapshotAgeMs:
+        this.lastSnapshotAtMs > 0 ? performance.now() - this.lastSnapshotAtMs : null,
+      snapshotHz:
+        averageInterval && averageInterval > 0 ? 1000 / averageInterval : null,
+      renderDtMs: this.renderDtMs,
+      simulationDtMs: this.simulationDtMs,
+      reconcileAction: this.lastReconcileAction,
+      pendingInputCount: this.localMovement.getPendingCount(),
+      visualErrorPx: this.localVisual.getErrorPx(),
+      remoteInterpolationDelayMs:
+        this.remotes.values().next().value?.getInterpolationDelayMs() ?? null,
+    })
   }
 
   private flushInput(deltaMS: number): void {
@@ -484,20 +587,15 @@ export class GameRenderer {
     }
 
     this.inputAccumMs += deltaMS
-    const buttons = this.movement.read()
-    const changed = !this.movement.isEqual(buttons, this.lastSentButtons)
-
-    if (!changed && this.inputAccumMs < INPUT_SEND_INTERVAL_MS) {
+    if (this.inputAccumMs < INPUT_BATCH_INTERVAL_MS) {
       return
     }
 
-    this.inputAccumMs = 0
-    this.inputSequence += 1
-    this.lastSentButtons = { ...buttons }
-    if (buttons.up || buttons.down || buttons.left || buttons.right) {
-      this.lastMoveInputAtMs = performance.now()
+    this.inputAccumMs %= INPUT_BATCH_INTERVAL_MS
+    const batch = this.localMovement.takeBatch(this.movementLocked)
+    if (batch) {
+      this.inputSendListener(batch)
     }
-    this.inputSendListener(buttons, this.inputSequence)
   }
 
   private handleInteraction(): void {
@@ -522,8 +620,11 @@ export class GameRenderer {
       return
     }
     const now = performance.now()
-    for (const [playerId, sample] of this.remotes) {
-      this.world.setRemotePlayer(playerId, interpolateRemote(sample, now))
+    for (const [playerId, track] of this.remotes) {
+      const position = track.sample(now)
+      if (position) {
+        this.world.setRemotePlayer(playerId, position)
+      }
     }
   }
 
@@ -615,18 +716,6 @@ export class GameRenderer {
       remoteCount: this.world.getRemoteCount(),
       zoom: this.camera.getZoom(),
     })
-  }
-}
-
-function interpolateRemote(sample: RemoteSample, now: number): WorldPosition {
-  const span = sample.toTime - sample.fromTime
-  if (span <= 0) {
-    return { ...sample.to }
-  }
-  const t = Math.min(1, Math.max(0, (now - sample.fromTime) / span))
-  return {
-    x: sample.from.x + (sample.to.x - sample.from.x) * t,
-    y: sample.from.y + (sample.to.y - sample.from.y) * t,
   }
 }
 

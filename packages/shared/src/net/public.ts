@@ -21,6 +21,7 @@ export type {
 } from "./inventoryPayloads.js"
 export type {
   PlayerInputPayload,
+  PlayerMovementCommand,
   PlayerStateEntry,
   PlayerStatePayload,
 } from "./playerPayloads.js"

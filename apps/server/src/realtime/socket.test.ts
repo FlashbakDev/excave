@@ -36,10 +36,13 @@ describe("socket guest session", () => {
     await built.app.close()
   })
 
-  function connectClient(): Socket<ServerToClientEvents, ClientToServerEvents> {
+  function connectClient(
+    playerId?: string,
+  ): Socket<ServerToClientEvents, ClientToServerEvents> {
     return createClient(baseUrl, {
       transports: ["websocket"],
       forceNew: true,
+      auth: playerId ? { playerId } : {},
     })
   }
 
@@ -124,14 +127,22 @@ describe("socket guest session", () => {
       })
 
       client.emit(ClientToServerEvent.WorldJoin, {})
-      await waitForEvent<WorldJoinedPayload>(client, ServerToClientEvent.WorldJoined)
+      const joined = await waitForEvent<WorldJoinedPayload>(
+        client,
+        ServerToClientEvent.WorldJoined,
+      )
 
       client.emit(ClientToServerEvent.PlayerInput, {
-        up: false,
-        down: false,
-        left: false,
-        right: true,
-        sequence: 1,
+        movementEpoch: joined.movementEpoch,
+        commands: [
+          {
+            up: false,
+            down: false,
+            left: false,
+            right: true,
+            sequence: joined.lastProcessedSequence + 1,
+          },
+        ],
       })
 
       for (let i = 0; i < 6; i += 1) {
@@ -160,6 +171,44 @@ describe("socket guest session", () => {
       assert.ok(typeof match.y === "number")
     } finally {
       client.close()
+      await waitFor(() => built.registry.count() === 0)
+    }
+  })
+
+  it("resumes movement authority during the reconnect grace period", async () => {
+    const first = connectClient()
+    const ready = await waitForEvent<SessionReadyPayload>(
+      first,
+      ServerToClientEvent.SessionReady,
+    )
+    first.emit(ClientToServerEvent.WorldJoin, {})
+    const initial = await waitForEvent<WorldJoinedPayload>(
+      first,
+      ServerToClientEvent.WorldJoined,
+    )
+    const runtime = built.runtimes.get(ready.playerId)
+    assert.ok(runtime)
+    runtime.position.x += 32
+    const retainedX = runtime.position.x
+    first.close()
+    await waitFor(() => built.registry.count() === 0)
+
+    const second = connectClient(ready.playerId)
+    try {
+      const resumed = await waitForEvent<SessionReadyPayload>(
+        second,
+        ServerToClientEvent.SessionReady,
+      )
+      assert.equal(resumed.playerId, ready.playerId)
+      second.emit(ClientToServerEvent.WorldJoin, {})
+      const joined = await waitForEvent<WorldJoinedPayload>(
+        second,
+        ServerToClientEvent.WorldJoined,
+      )
+      assert.equal(joined.movementEpoch, initial.movementEpoch)
+      assert.equal(joined.spawn.x, retainedX)
+    } finally {
+      second.close()
       await waitFor(() => built.registry.count() === 0)
     }
   })

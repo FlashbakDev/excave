@@ -5,6 +5,7 @@ import {
   ClientToServerEvent,
   DEFAULT_WORLD_ID,
   ExcavationSessionStatus,
+  MOVEMENT_MAX_SERVER_QUEUE,
   SCAN_COOLDOWN_MS,
   SCAN_RANGE_PX,
   ServerToClientEvent,
@@ -30,6 +31,7 @@ const DEFAULT_CORS_ORIGINS = [
   "http://127.0.0.1:3000",
   "http://localhost:3000",
 ]
+const PLAYER_RECONNECT_GRACE_MS = 15_000
 
 export type GameSocketServer = SocketServer<
   ClientToServerEvents,
@@ -57,6 +59,10 @@ export function attachSocketIO(
       methods: ["GET", "POST"],
     },
   })
+  const runtimeRemovalTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >()
 
   io.on("connection", (socket) => {
     const auth = socket.handshake.auth as { playerId?: unknown }
@@ -64,6 +70,11 @@ export function attachSocketIO(
       typeof auth.playerId === "string" ? auth.playerId : null
     const player = registry.create(socket.id, preferred)
     socket.data.playerId = player.playerId
+    const pendingRemoval = runtimeRemovalTimers.get(player.playerId)
+    if (pendingRemoval) {
+      clearTimeout(pendingRemoval)
+      runtimeRemovalTimers.delete(player.playerId)
+    }
 
     app.log.info(
       {
@@ -98,10 +109,10 @@ export function attachSocketIO(
         return
       }
 
-      const spawn = world.getSpawnPosition()
-      const centerChunk = world.worldPositionToChunk(spawn)
+      const runtime = runtimes.spawn(player.playerId, world.getSpawnPosition())
+      const spawn = { ...runtime.position }
+      const centerChunk = world.worldPositionToChunk(runtime.position)
       const chunks = world.getNeighborhood(centerChunk, AOI_RADIUS)
-      runtimes.spawn(player.playerId, spawn)
       nodes.ensureNeighborhood(centerChunk, AOI_RADIUS)
 
       for (const room of aoi.roomsFor(centerChunk)) {
@@ -121,6 +132,8 @@ export function attachSocketIO(
         worldId: world.id,
         spawn,
         chunks,
+        movementEpoch: runtime.movementEpoch,
+        lastProcessedSequence: runtime.lastProcessedSequence,
       })
     })
 
@@ -329,7 +342,15 @@ export function attachSocketIO(
           )
           io.to(room).emit(ServerToClientEvent.NodeUpdated, update)
         }
-        runtimes.remove(removed.playerId)
+        runtimes.suspend(removed.playerId)
+        const timer = setTimeout(() => {
+          runtimes.remove(removed.playerId)
+          runtimeRemovalTimers.delete(removed.playerId)
+        }, PLAYER_RECONNECT_GRACE_MS)
+        if (typeof timer === "object" && "unref" in timer) {
+          timer.unref()
+        }
+        runtimeRemovalTimers.set(removed.playerId, timer)
       }
       app.log.info(
         {
@@ -351,11 +372,24 @@ function isValidInputPayload(payload: unknown): payload is PlayerInputPayload {
   }
   const value = payload as Record<string, unknown>
   return (
-    typeof value.up === "boolean" &&
-    typeof value.down === "boolean" &&
-    typeof value.left === "boolean" &&
-    typeof value.right === "boolean" &&
-    typeof value.sequence === "number" &&
-    Number.isFinite(value.sequence)
+    typeof value.movementEpoch === "string" &&
+    value.movementEpoch.length > 0 &&
+    Array.isArray(value.commands) &&
+    value.commands.length > 0 &&
+    value.commands.length <= MOVEMENT_MAX_SERVER_QUEUE &&
+    value.commands.every((command) => {
+      if (!command || typeof command !== "object") {
+        return false
+      }
+      const item = command as Record<string, unknown>
+      return (
+        typeof item.up === "boolean" &&
+        typeof item.down === "boolean" &&
+        typeof item.left === "boolean" &&
+        typeof item.right === "boolean" &&
+        Number.isSafeInteger(item.sequence) &&
+        Number(item.sequence) > 0
+      )
+    })
   )
 }

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import {
+  PLAYER_COLLISION_BODY_HEIGHT_PX,
+  PLAYER_COLLISION_FOOT_PAD_PX,
   PLAYER_COLLISION_HALF_WIDTH_PX,
   PLAYER_SPEED_PX_PER_SEC,
   TILE_SIZE,
@@ -17,6 +19,17 @@ describe("canOccupy", () => {
       canOccupy({ x: TILE_SIZE - PLAYER_COLLISION_HALF_WIDTH_PX + 1, y: 16 }, isWalkable),
       false,
     )
+  })
+
+  it("matches the visible lower-body footprint above the feet", () => {
+    assert.equal(PLAYER_COLLISION_HALF_WIDTH_PX * 2, 12)
+    assert.equal(PLAYER_COLLISION_BODY_HEIGHT_PX, 10)
+    assert.equal(PLAYER_COLLISION_FOOT_PAD_PX, 0)
+
+    const feetY = 20
+    const wallAboveLowerBody = (p: { x: number; y: number }) =>
+      p.y > feetY - PLAYER_COLLISION_BODY_HEIGHT_PX
+    assert.equal(canOccupy({ x: 16, y: feetY }, wallAboveLowerBody), false)
   })
 })
 
@@ -54,6 +67,19 @@ describe("stepMovement", () => {
     )
     assert.equal(result.position.x, 40)
     assert.ok(result.position.y > 10)
+    assert.equal(result.velocity.x, 0)
+    assert.ok(result.velocity.y > 0)
+  })
+
+  it("reports zero velocity when a wall blocks all displacement", () => {
+    const result = stepMovement(
+      { x: 40, y: 10 },
+      { up: false, down: false, left: false, right: true },
+      1,
+      (position) => position.x < 64,
+    )
+    assert.deepEqual(result.position, { x: 40, y: 10 })
+    assert.deepEqual(result.velocity, { x: 0, y: 0 })
   })
 
   it("keeps the footprint clear of a vertical wall", () => {

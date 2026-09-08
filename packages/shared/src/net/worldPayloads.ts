@@ -9,6 +9,8 @@ export interface WorldJoinedPayload {
   worldId: WorldId
   spawn: WorldPosition
   chunks: ChunkPayload[]
+  movementEpoch: string
+  lastProcessedSequence: number
 }
 
 export interface WorldChunkRequestPayload {

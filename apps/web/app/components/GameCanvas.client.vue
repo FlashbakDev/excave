@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue"
-import type { GameRenderer, GameRendererStats } from "~/game/renderer"
+import type {
+  GameRenderer,
+  GameRendererStats,
+  MovementDebugSnapshot,
+} from "~/game/renderer"
 import type {
   ChunkPayload,
   ExcavationStartedPayload,
@@ -14,6 +18,7 @@ import InventoryPanel from "~/components/InventoryPanel.vue"
 
 const hostRef = ref<HTMLElement | null>(null)
 const stats = ref<GameRendererStats | null>(null)
+const movementDebug = shallowRef<MovementDebugSnapshot | null>(null)
 const errorMessage = ref<string | null>(null)
 const notice = ref<string | null>(null)
 const excavationSession = shallowRef<ExcavationStartedPayload | null>(null)
@@ -48,7 +53,7 @@ function showNotice(message: string): void {
 }
 
 function onHudKeyDown(event: KeyboardEvent): void {
-  if (event.repeat || event.code !== "F3") {
+  if (!isDev || event.repeat || event.code !== "F3") {
     return
   }
   event.preventDefault()
@@ -71,7 +76,13 @@ const {
 } = useGameSession({
   onWorldJoined(payload) {
     if (renderer.value) {
-      renderer.value.applyWorldJoin(payload.spawn, payload.chunks)
+      renderer.value.applyWorldJoin(
+        payload.spawn,
+        payload.chunks,
+        payload.movementEpoch,
+        payload.lastProcessedSequence,
+      )
+      renderer.value.setNetworkConnected(true)
     } else {
       pendingJoin.value = payload
     }
@@ -143,6 +154,12 @@ watch(pingMs, (ms) => {
   renderer.value?.setRoundTripMs(ms)
 })
 
+watch(status, (value) => {
+  if (value !== "connected") {
+    renderer.value?.setNetworkConnected(false)
+  }
+})
+
 function closeExcavation(): void {
   excavationSession.value = null
   renderer.value?.setMovementLocked(false)
@@ -156,7 +173,13 @@ function closeExcavation(): void {
  */
 function flushPending(next: GameRenderer): void {
   if (pendingJoin.value) {
-    next.applyWorldJoin(pendingJoin.value.spawn, pendingJoin.value.chunks)
+    next.applyWorldJoin(
+      pendingJoin.value.spawn,
+      pendingJoin.value.chunks,
+      pendingJoin.value.movementEpoch,
+      pendingJoin.value.lastProcessedSequence,
+    )
+    next.setNetworkConnected(true)
     pendingJoin.value = null
   }
   if (pendingChunks.value) {
@@ -194,14 +217,14 @@ onMounted(async () => {
     next.onStats((value) => {
       stats.value = value
     })
+    next.onMovementDebug((value) => {
+      movementDebug.value = value
+    })
     next.onChunkRequest((chunks) => {
       requestChunks(chunks)
     })
-    next.onInputSend((buttons, sequence) => {
-      if (excavationSession.value) {
-        return
-      }
-      sendInput(buttons, sequence)
+    next.onInputSend((payload) => {
+      sendInput(payload)
     })
     next.onScan(() => {
       if (excavationSession.value) {
@@ -222,6 +245,7 @@ onMounted(async () => {
     renderer.value = next
     next.setLocalPlayerId(playerId.value)
     next.setRoundTripMs(pingMs.value)
+    next.setNetworkConnected(false)
 
     if (terrainTestActive.value) {
       next.loadTerrainTestScene({ debugColors: true, lighting: false })
@@ -279,10 +303,50 @@ onBeforeUnmount(() => {
       </p>
       <p v-if="isDev && stats">FPS {{ stats.fps.toFixed(0) }}</p>
       <p v-if="stats">Zoom {{ stats.zoom }}×</p>
+      <template v-if="movementDebug">
+        <p>
+          Input:
+          {{ Object.entries(movementDebug.input).filter(([, down]) => down).map(([key]) => key).join("+") || "idle" }}
+        </p>
+        <p>
+          Pred {{ movementDebug.predicted.x.toFixed(1) }},
+          {{ movementDebug.predicted.y.toFixed(1) }}
+        </p>
+        <p v-if="movementDebug.authoritative">
+          Auth {{ movementDebug.authoritative.x.toFixed(1) }},
+          {{ movementDebug.authoritative.y.toFixed(1) }}
+        </p>
+        <p>
+          Render {{ movementDebug.render.x.toFixed(1) }},
+          {{ movementDebug.render.y.toFixed(1) }}
+        </p>
+        <p>
+          Camera {{ movementDebug.camera.x.toFixed(1) }},
+          {{ movementDebug.camera.y.toFixed(1) }}
+        </p>
+        <p>
+          Err now {{ movementDebug.predictionErrorPx?.toFixed(2) ?? "—" }} px ·
+          ack {{ movementDebug.acknowledgedErrorPx?.toFixed(2) ?? "—" }} px ·
+          reconcile {{ movementDebug.reconcileAction }}
+        </p>
+        <p>
+          Inputs {{ movementDebug.pendingInputCount }} · visual
+          {{ movementDebug.visualErrorPx.toFixed(2) }} px · remote delay
+          {{ movementDebug.remoteInterpolationDelayMs?.toFixed(0) ?? "—" }} ms
+        </p>
+        <p>
+          Snapshot {{ movementDebug.snapshotHz?.toFixed(1) ?? "—" }} Hz ·
+          age {{ movementDebug.snapshotAgeMs?.toFixed(0) ?? "—" }} ms
+        </p>
+        <p>
+          dt render {{ movementDebug.renderDtMs.toFixed(2) }} ms ·
+          sim {{ movementDebug.simulationDtMs?.toFixed(2) ?? "—" }} ms
+        </p>
+      </template>
       <p v-if="terrainTestActive" class="hint">
         Terrain test · C debug colors · L lighting · 1/2/3 zoom
       </p>
-      <p v-else class="hint">F3 : masquer le debug · 1/2/3 zoom · E scan</p>
+      <p v-else class="hint">F3 : masquer · 1/2/3 zoom · E scan</p>
     </div>
 
     <div v-else class="hud hud-minimal" aria-live="polite">

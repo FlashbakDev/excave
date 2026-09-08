@@ -132,47 +132,17 @@ function faceOffset(face: WallFaceId): { offsetX: number; offsetY: number } {
 /**
  * Face overlays — orientation is always relative to FLOOR neighbors:
  *   S open → cliff on the south edge of the wall (toward floor below)
- *   E open → lip on the east edge (toward floor on the right)
- *   W open → lip on the west edge
+ *   E/W only → wall top only (vertical corridor walls have no side lips)
  *   N open → no face (top-down; wall_top only)
  *
- * Outer SE/SW → dedicated L tile. Inner T/L → truncated south cliff.
+ * South floor always gets a full-width cliff. Inner/outer corner variants
+ * used to truncate that band to meet E/W lips — those lips are gone.
  */
 export function resolveWallFaceOverlays(openMask: number): WallFaceId[] {
-  const s = (openMask & OpenNeighbor.S) !== 0
-  const e = (openMask & OpenNeighbor.E) !== 0
-  const w = (openMask & OpenNeighbor.W) !== 0
-  const se = (openMask & OpenNeighbor.SE) !== 0
-  const sw = (openMask & OpenNeighbor.SW) !== 0
-
-  const faces: WallFaceId[] = []
-
-  if (s) {
-    // South cliff takes priority; combine with E/W via corner tiles.
-    const innerE = !e && se
-    const innerW = !w && sw
-    if (e && w) {
-      faces.push("wall_face_s")
-    } else if (e) {
-      faces.push("wall_corner_se")
-    } else if (w) {
-      faces.push("wall_corner_sw")
-    } else if (innerE && innerW) {
-      faces.push("wall_face_s")
-    } else if (innerE) {
-      faces.push("wall_inner_se")
-    } else if (innerW) {
-      faces.push("wall_inner_sw")
-    } else {
-      faces.push("wall_face_s")
-    }
-  } else {
-    // No south floor: only side lips toward east/west floors.
-    if (e) faces.push("wall_face_e")
-    if (w) faces.push("wall_face_w")
+  if ((openMask & OpenNeighbor.S) === 0) {
+    return []
   }
-
-  return faces
+  return ["wall_face_s"]
 }
 
 /** @deprecated Prefer resolveWallFaceOverlays — returns the primary face only. */

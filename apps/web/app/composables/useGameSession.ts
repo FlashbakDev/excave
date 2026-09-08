@@ -15,11 +15,11 @@ import {
   type ExcavationUpdatePayload,
   type InventoryItemPublic,
   type InventoryUpdatePayload,
-  type MovementButtons,
   type NodeDetectedPayload,
   type NodeUpdatedPayload,
   type PlayerScanRejectedPayload,
   type PlayerScannedPayload,
+  type PlayerInputPayload,
   type PlayerStatePayload,
   type ServerToClientEvents,
   type WorldJoinedPayload,
@@ -134,15 +134,12 @@ export function useGameSession(options?: {
     })
   }
 
-  function sendInput(buttons: MovementButtons, sequence: number): void {
+  function sendInput(payload: PlayerInputPayload): void {
     const current = socket.value
     if (!current?.connected || !worldId.value) {
       return
     }
-    current.emit(ClientToServerEvent.PlayerInput, {
-      ...buttons,
-      sequence,
-    })
+    current.emit(ClientToServerEvent.PlayerInput, payload)
   }
 
   function sendScan(): void {
@@ -215,6 +212,7 @@ export function useGameSession(options?: {
     next.on(ServerToClientEvent.SessionReady, (payload) => {
       playerId.value = payload.playerId
       storePlayerId(payload.playerId)
+      next.auth = { playerId: payload.playerId }
       inventory.value = [...payload.inventory]
       onInventoryUpdate?.({ items: payload.inventory })
       status.value = "connected"

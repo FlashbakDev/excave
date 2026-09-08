@@ -16,6 +16,9 @@ export {
   EXCAVATION_MAX_ROCK,
   EXCAVATION_MAX_STABILITY,
   EXCAVATION_RANGE_PX,
+  MOVEMENT_COMMAND_HZ,
+  MOVEMENT_MAX_PENDING_COMMANDS,
+  MOVEMENT_MAX_SERVER_QUEUE,
   PLAYER_COLLISION_BODY_HEIGHT_PX,
   PLAYER_COLLISION_FOOT_PAD_PX,
   PLAYER_COLLISION_HALF_WIDTH_PX,
@@ -35,7 +38,7 @@ export {
   isChunkInAoi,
 } from "./aoi.js"
 
-export { canOccupy, stepMovement } from "./movement.js"
+export { canOccupy, replayMovementCommands, stepMovement } from "./movement.js"
 export type { MovementButtons, WalkabilityFn } from "./movement.js"
 
 export { TileType, isTileType } from "./world/tiles.js"
@@ -72,6 +75,7 @@ export type {
   NodeUpdatedPayload,
   NodeVisualStateId,
   PlayerInputPayload,
+  PlayerMovementCommand,
   PlayerScanPayload,
   PlayerScanRejectedPayload,
   PlayerScannedPayload,

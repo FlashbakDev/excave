@@ -3,6 +3,7 @@ import {
   PLAYER_COLLISION_FOOT_PAD_PX,
   PLAYER_COLLISION_HALF_WIDTH_PX,
   PLAYER_SPEED_PX_PER_SEC,
+  MOVEMENT_COMMAND_HZ,
 } from "./constants.js"
 import type { WorldPosition } from "./ids.js"
 
@@ -78,24 +79,30 @@ export function stepMovement(
     x: position.x + vx * dtSeconds,
     y: position.y + vy * dtSeconds,
   }
+  const actualVelocity = (resolved: WorldPosition): WorldPosition => ({
+    x: (resolved.x - position.x) / dtSeconds,
+    y: (resolved.y - position.y) / dtSeconds,
+  })
 
   const fits = (candidate: WorldPosition) => canOccupy(candidate, isWalkable)
 
   // If already overlapping a wall (legacy pose / reconcile), allow escape moves.
   if (!fits(position)) {
     if (fits(next)) {
-      return { position: next, velocity: { x: vx, y: vy } }
+      return { position: next, velocity: actualVelocity(next) }
     }
     if (fits({ x: next.x, y: position.y })) {
+      const resolved = { x: next.x, y: position.y }
       return {
-        position: { x: next.x, y: position.y },
-        velocity: { x: vx, y: vy },
+        position: resolved,
+        velocity: actualVelocity(resolved),
       }
     }
     if (fits({ x: position.x, y: next.y })) {
+      const resolved = { x: position.x, y: next.y }
       return {
-        position: { x: position.x, y: next.y },
-        velocity: { x: vx, y: vy },
+        position: resolved,
+        velocity: actualVelocity(resolved),
       }
     }
   }
@@ -112,25 +119,45 @@ export function stepMovement(
     !fits(resolved)
   ) {
     if (fits({ x: resolved.x, y: position.y })) {
+      const slide = { x: resolved.x, y: position.y }
       return {
-        position: { x: resolved.x, y: position.y },
-        velocity: { x: vx, y: vy },
+        position: slide,
+        velocity: actualVelocity(slide),
       }
     }
     if (fits({ x: position.x, y: resolved.y })) {
+      const slide = { x: position.x, y: resolved.y }
       return {
-        position: { x: position.x, y: resolved.y },
-        velocity: { x: vx, y: vy },
+        position: slide,
+        velocity: actualVelocity(slide),
       }
     }
     return {
       position: { x: position.x, y: position.y },
-      velocity: { x: vx, y: vy },
+      velocity: { x: 0, y: 0 },
     }
   }
 
   return {
     position: resolved,
-    velocity: { x: vx, y: vy },
+    velocity: actualVelocity(resolved),
   }
+}
+
+/** Replays the fixed command timeline used by client and server authority. */
+export function replayMovementCommands(
+  position: WorldPosition,
+  commands: readonly MovementButtons[],
+  isWalkable: WalkabilityFn,
+): WorldPosition {
+  let next = { ...position }
+  for (const command of commands) {
+    next = stepMovement(
+      next,
+      command,
+      1 / MOVEMENT_COMMAND_HZ,
+      isWalkable,
+    ).position
+  }
+  return next
 }
