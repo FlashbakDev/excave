@@ -1,5 +1,7 @@
 # Excave — Direction artistique
 
+> Référence art seulement. État runtime / lots : [STATE.md](./STATE.md) · [LOTS.md](./LOTS.md).
+
 Référence visuelle du projet. Toute production d’assets, choix de palette côté client et décision de rendu doit s’y conformer.
 
 Lots associés : **10** (ce document) → **11–20** (pipeline, tiles, lumière, personnage, UI, polish).

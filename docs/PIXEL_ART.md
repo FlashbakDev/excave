@@ -1,7 +1,9 @@
 # Excave — Conventions pixel art
 
+> Conventions art seulement. État runtime : [STATE.md](./STATE.md).
+
 Complète [ART_DIRECTION.md](./ART_DIRECTION.md).  
-Implémentation pipeline / Pixi : **Lot 11**. Ce document fige les **conventions** dès le Lot 10.
+Implémentation pipeline / Pixi : **Lot 11**.
 
 ---
 

@@ -1,7 +1,7 @@
 import { Application } from "pixi.js"
 import {
   AOI_RADIUS,
-  EXCAVATION_RANGE_PX,
+  SCAN_RANGE_PX,
   SIM_TICK_HZ,
   type ChunkCoordinate,
   type ChunkPayload,
@@ -150,6 +150,7 @@ export class GameRenderer {
     }
     event.preventDefault()
     this.camera.setZoom(zoom)
+    this.world?.setNodeTapZoom(zoom)
     this.updateLighting()
     this.emitStats()
   }
@@ -233,8 +234,15 @@ export class GameRenderer {
     host.appendChild(app.canvas)
 
     const world = new WorldContainer(assets)
+    world.onNodeExamine((nodeId) => {
+      if (this.movementLocked) {
+        return
+      }
+      this.excavationStartListener?.(nodeId)
+    })
     const camera = new Camera()
     camera.attachWorld(world.root)
+    camera.view.eventMode = "passive"
     app.stage.addChild(camera.view)
 
     const lighting = new PlayerLightOverlay()
@@ -247,6 +255,7 @@ export class GameRenderer {
 
     this.resizeToHost()
     camera.setFocus(world.getPlayerPosition())
+    world.setNodeTapZoom(camera.getZoom())
     this.updateLighting()
 
     this.resizeObserver = new ResizeObserver(() => {
@@ -291,6 +300,23 @@ export class GameRenderer {
     this.world?.playScanPulse(position, rangePx)
   }
 
+  /** Client scan juice at local player — used by HUD + keyboard path. */
+  playLocalScanPulse(): void {
+    if (!this.world) {
+      return
+    }
+    this.world.playScanPulse(this.world.getPlayerPosition(), SCAN_RANGE_PX)
+  }
+
+  /** Mobile virtual stick — merged with keyboard in MovementInput. */
+  setVirtualMovement(buttons: MovementButtons): void {
+    this.movement.setVirtualButtons(buttons)
+  }
+
+  clearVirtualMovement(): void {
+    this.movement.clearVirtualButtons()
+  }
+
   setMovementLocked(locked: boolean): void {
     if (
       locked &&
@@ -298,6 +324,7 @@ export class GameRenderer {
       this.world &&
       this.networkConnected
     ) {
+      this.movement.clearVirtualButtons()
       this.localMovement.queueImmediate(
         { up: false, down: false, left: false, right: false },
         (position) => this.world!.isWalkableAt(position),
@@ -308,6 +335,7 @@ export class GameRenderer {
       }
     }
     this.movementLocked = locked
+    this.world?.setExamineInteractionsEnabled(!locked)
   }
 
   setNetworkConnected(connected: boolean): void {
@@ -334,6 +362,8 @@ export class GameRenderer {
     this.world.upsertChunks(chunks)
     this.localMovement.reset(movementEpoch, lastProcessedSequence, spawn)
     this.localVisual.reset()
+    this.world.clearScanEffects()
+    this.world.clearDetectedNodes()
     this.world.setPlayerPosition(spawn, { animate: false })
     this.lastPredictedPosition = { ...spawn }
     this.lastAuthoritativePosition = { ...spawn }
@@ -477,6 +507,8 @@ export class GameRenderer {
     this.resizeObserver?.disconnect()
     this.resizeObserver = null
 
+    this.world?.clearScanEffects()
+
     if (this.app) {
       this.app.ticker.remove(this.onTick)
       this.app.destroy({ removeView: true }, { children: true })
@@ -602,16 +634,7 @@ export class GameRenderer {
     if (!this.world || !this.interaction.consumeInteractPressed()) {
       return
     }
-
-    const nearest = this.world.getNearestDetectedNode(
-      this.world.getPlayerPosition(),
-      EXCAVATION_RANGE_PX,
-    )
-    if (nearest) {
-      this.excavationStartListener?.(nearest.nodeId)
-      return
-    }
-
+    // E / Space = scan only. Fissures are examined by clicking when in range.
     this.scanListener?.()
   }
 
@@ -659,6 +682,7 @@ export class GameRenderer {
 
     this.app.renderer.resize(width, height)
     this.camera.setViewport(width, height)
+    this.world?.setNodeTapZoom(this.camera.getZoom())
     this.lighting?.setViewport(width, height)
     this.updateLighting()
     this.emitStats()

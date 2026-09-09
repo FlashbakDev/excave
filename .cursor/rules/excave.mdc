@@ -1,0 +1,48 @@
+---
+description: Excave — docs-first, code wins, token-light agent workflow
+alwaysApply: true
+---
+
+# Excave agent rules
+
+## Before non-trivial work
+
+1. Read `docs/STATE.md` first.
+2. Read only docs needed for the task (`ARCHITECTURE`, `LOTS`, art docs).
+3. Inspect the real code involved — do not trust stale docs.
+
+## Source of truth
+
+- **Code wins** over any document.
+- If code ≠ `docs/STATE.md`: follow code; fix `STATE.md` in the same change when the global state shifted.
+
+## Token budget
+
+- Do **not** load all docs by default.
+- Prefer `STATE.md` → then one specialized doc → then code.
+- Do not paste long docs into replies; link paths.
+
+## End of a lot
+
+- Update `docs/STATE.md` if global state changed.
+- Update `docs/LOTS.md`.
+- Update a specialized doc only if necessary.
+- Never put hypothetical future in `STATE.md` → use `docs/FUTURE_IDEAS.md`.
+- Do not duplicate the same facts across many docs; link instead.
+
+## Stable bricks (do not rewrite without a proven bug)
+
+- Server authority
+- Input-only movement (no client absolute position)
+- Client prediction + ack replay
+- Chunk AOI streaming
+- Excavation secrets server-only
+
+## Structuring constants
+
+Before changing `TILE_SIZE`, `CHUNK_SIZE`, tick rates, collision footprint, AOI, etc.: search all usages in the repo.
+
+## Finish checklist
+
+- Run `pnpm test` / `typecheck` / `build` according to impact.
+- Short compte rendu; **STOP** and wait for explicit `continue` before the next lot.

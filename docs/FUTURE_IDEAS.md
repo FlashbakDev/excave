@@ -1,16 +1,15 @@
-# Excave — Idées futures (hors scope immédiat)
+# Excave — Idées futures (hors scope)
 
-Noter ici sans implémenter. Les lots en cours ne doivent pas dériver vers ces sujets.
+Noter ici **sans implémenter**. Ne pas polluer [STATE.md](./STATE.md).
 
-## Visuel / personnage
+## Visuel
 
-- **Lampe directionnelle** : cône de lumière selon facing (après Lot 14 omnidirectionnel)
-- Occlusion murale / raycasting stylisé
-- Ombres dynamiques au sol
-- Équipement visible (pioche, sac évolutif)
-- Cosmétiques / teintes joueur choisies
-- Animations : scan pose, mine, dégâts, emotes
+- Lampe directionnelle (cône selon facing)
+- Occlusion / raycast stylisé
+- Ombres sol dynamiques
+- Équipement visible ; cosmétiques
+- Anims : scan, mine, emotes
 
-## Gameplay (rappel)
+## Gameplay (post-POC)
 
-Combat, bases, CTF, guildes, crafting, économie, progression — hors phase visuelle 10–20.
+Combat, bases, CTF, guildes, crafting, économie, progression, auth réelle, chat, scale Redis/K8s.

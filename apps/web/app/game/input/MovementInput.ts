@@ -1,11 +1,12 @@
 import type { MovementButtons } from "@excave/shared"
+import { IDLE_MOVEMENT } from "./virtualJoystick"
 
 /**
- * Keyboard movement capture (ZQSD / WASD / arrows).
- * Shape is ready for a future joystick adapter.
+ * Keyboard + virtual stick movement capture (ZQSD / WASD / arrows / mobile joystick).
  */
 export class MovementInput {
   private readonly pressed = new Set<string>()
+  private virtual: MovementButtons = { ...IDLE_MOVEMENT }
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     this.pressed.add(event.code)
@@ -24,15 +25,16 @@ export class MovementInput {
     target.removeEventListener("keydown", this.onKeyDown)
     target.removeEventListener("keyup", this.onKeyUp)
     this.pressed.clear()
+    this.virtual = { ...IDLE_MOVEMENT }
   }
 
-  /** Replace keyboard state (e.g. future virtual stick). */
-  setButtons(buttons: MovementButtons): void {
-    this.pressed.clear()
-    if (buttons.up) this.pressed.add("ArrowUp")
-    if (buttons.down) this.pressed.add("ArrowDown")
-    if (buttons.left) this.pressed.add("ArrowLeft")
-    if (buttons.right) this.pressed.add("ArrowRight")
+  /** Overlay from the mobile joystick (merged with keyboard on read). */
+  setVirtualButtons(buttons: MovementButtons): void {
+    this.virtual = { ...buttons }
+  }
+
+  clearVirtualButtons(): void {
+    this.virtual = { ...IDLE_MOVEMENT }
   }
 
   read(): MovementButtons {
@@ -40,13 +42,21 @@ export class MovementInput {
       up:
         this.pressed.has("KeyW") ||
         this.pressed.has("KeyZ") ||
-        this.pressed.has("ArrowUp"),
-      down: this.pressed.has("KeyS") || this.pressed.has("ArrowDown"),
+        this.pressed.has("ArrowUp") ||
+        this.virtual.up,
+      down:
+        this.pressed.has("KeyS") ||
+        this.pressed.has("ArrowDown") ||
+        this.virtual.down,
       left:
         this.pressed.has("KeyA") ||
         this.pressed.has("KeyQ") ||
-        this.pressed.has("ArrowLeft"),
-      right: this.pressed.has("KeyD") || this.pressed.has("ArrowRight"),
+        this.pressed.has("ArrowLeft") ||
+        this.virtual.left,
+      right:
+        this.pressed.has("KeyD") ||
+        this.pressed.has("ArrowRight") ||
+        this.virtual.right,
     }
   }
 

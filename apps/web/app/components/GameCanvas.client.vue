@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue"
+import {
+  SCAN_COOLDOWN_MS,
+  type ChunkPayload,
+  type ExcavationStartedPayload,
+  type ExcavationUpdatePayload,
+  type MovementButtons,
+  type NodeDetectedPayload,
+  type PlayerStatePayload,
+  type WorldJoinedPayload,
+} from "@excave/shared"
 import type {
   GameRenderer,
   GameRendererStats,
   MovementDebugSnapshot,
 } from "~/game/renderer"
-import type {
-  ChunkPayload,
-  ExcavationStartedPayload,
-  ExcavationUpdatePayload,
-  NodeDetectedPayload,
-  PlayerStatePayload,
-  WorldJoinedPayload,
-} from "@excave/shared"
+import { IDLE_MOVEMENT } from "~/game/input/virtualJoystick"
 import ExcavationOverlay from "~/components/excavation/ExcavationOverlay.vue"
 import InventoryPanel from "~/components/InventoryPanel.vue"
+import ScanButton from "~/components/ScanButton.vue"
+import VirtualJoystick from "~/components/VirtualJoystick.vue"
 
 const hostRef = ref<HTMLElement | null>(null)
 const stats = ref<GameRendererStats | null>(null)
@@ -39,7 +44,59 @@ const pendingChunks = shallowRef<ChunkPayload[] | null>(null)
 const pendingStates = shallowRef<PlayerStatePayload[]>([])
 const pendingNodes = shallowRef<NodeDetectedPayload[]>([])
 
+/** Client mirror of server scan cooldown — UI only; server remains authoritative. */
+const scanCooldownEndsAt = ref(0)
+const scanNowMs = ref(0)
+const scanButtonPressed = ref(false)
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
+let scanCooldownRaf = 0
+let scanPressTimer: ReturnType<typeof setTimeout> | null = null
+
+const scanCooldownRemainingMs = computed(() =>
+  Math.max(0, scanCooldownEndsAt.value - scanNowMs.value),
+)
+const scanCooldownRatio = computed(() => {
+  if (scanCooldownRemainingMs.value <= 0) {
+    return 0
+  }
+  return Math.min(1, scanCooldownRemainingMs.value / SCAN_COOLDOWN_MS)
+})
+const scanCooldownSeconds = computed(() =>
+  Math.ceil(scanCooldownRemainingMs.value / 1000),
+)
+const scanButtonVisible = computed(
+  () => !excavationSession.value && !terrainTestActive.value,
+)
+
+/** Coarse pointer / touch — virtual stick on the right. */
+const touchControls = ref(false)
+let touchMedia: MediaQueryList | null = null
+
+const joystickVisible = computed(
+  () =>
+    touchControls.value &&
+    !excavationSession.value &&
+    !terrainTestActive.value &&
+    status.value === "connected",
+)
+
+function syncTouchControls(): void {
+  if (typeof window === "undefined") {
+    touchControls.value = false
+    return
+  }
+  touchControls.value =
+    window.matchMedia("(pointer: coarse)").matches ||
+    window.matchMedia("(hover: none)").matches
+}
+
+function onVirtualMove(buttons: MovementButtons): void {
+  renderer.value?.setVirtualMovement(buttons)
+}
+
+function clearVirtualMove(): void {
+  renderer.value?.setVirtualMovement({ ...IDLE_MOVEMENT })
+}
 
 function showNotice(message: string): void {
   notice.value = message
@@ -58,6 +115,66 @@ function onHudKeyDown(event: KeyboardEvent): void {
   }
   event.preventDefault()
   debugHud.value = !debugHud.value
+}
+
+function armScanCooldown(durationMs: number): void {
+  const endsAt = Date.now() + Math.max(0, durationMs)
+  scanCooldownEndsAt.value = endsAt
+  scanNowMs.value = Date.now()
+  if (scanCooldownRaf) {
+    cancelAnimationFrame(scanCooldownRaf)
+    scanCooldownRaf = 0
+  }
+  const tick = (): void => {
+    scanNowMs.value = Date.now()
+    if (scanNowMs.value < scanCooldownEndsAt.value) {
+      scanCooldownRaf = requestAnimationFrame(tick)
+      return
+    }
+    scanCooldownRaf = 0
+    scanCooldownEndsAt.value = 0
+  }
+  if (durationMs > 0) {
+    scanCooldownRaf = requestAnimationFrame(tick)
+  }
+}
+
+function flashScanButton(): void {
+  scanButtonPressed.value = true
+  if (scanPressTimer) {
+    clearTimeout(scanPressTimer)
+  }
+  scanPressTimer = setTimeout(() => {
+    scanButtonPressed.value = false
+    scanPressTimer = null
+  }, 120)
+}
+
+/** Shared path for HUD button + keyboard (E / Space). */
+function requestScan(options?: { fromKeyboard?: boolean }): void {
+  if (excavationSession.value || terrainTestActive.value) {
+    return
+  }
+  if (status.value !== "connected") {
+    return
+  }
+  if (scanCooldownRemainingMs.value > 0) {
+    if (options?.fromKeyboard) {
+      flashScanButton()
+    }
+    return
+  }
+  if (!renderer.value) {
+    return
+  }
+
+  if (options?.fromKeyboard) {
+    flashScanButton()
+  }
+
+  renderer.value.playLocalScanPulse()
+  sendScan()
+  armScanCooldown(SCAN_COOLDOWN_MS)
 }
 
 const {
@@ -113,17 +230,22 @@ const {
     renderer.value?.applyNodeUpdated(payload)
   },
   onPlayerScanned(payload) {
-    renderer.value?.playScanPulse(payload.position, payload.rangePx)
+    // Optimistic cooldown already armed in requestScan; keep full window.
+    if (scanCooldownRemainingMs.value <= 0) {
+      armScanCooldown(SCAN_COOLDOWN_MS)
+    }
     if (!payload.detected) {
       showNotice("Rien d'enfoui à portée…")
     }
   },
   onPlayerScanRejected(payload) {
+    armScanCooldown(payload.remainingMs)
     const seconds = Math.ceil(payload.remainingMs / 1000)
     showNotice(`Scan en recharge (${seconds}s)`)
   },
   onExcavationStarted(payload) {
     excavationSession.value = payload
+    clearVirtualMove()
     renderer.value?.setMovementLocked(true)
     renderer.value?.applyNodeUpdated({
       nodeId: payload.nodeId,
@@ -198,6 +320,9 @@ function flushPending(next: GameRenderer): void {
 
 onMounted(async () => {
   window.addEventListener("keydown", onHudKeyDown)
+  syncTouchControls()
+  touchMedia = window.matchMedia("(pointer: coarse)")
+  touchMedia.addEventListener("change", syncTouchControls)
 
   // ClientOnly / hydration can leave the ref unset for one tick on cold /game.
   let host = hostRef.value
@@ -227,10 +352,7 @@ onMounted(async () => {
       sendInput(payload)
     })
     next.onScan(() => {
-      if (excavationSession.value) {
-        return
-      }
-      sendScan()
+      requestScan({ fromKeyboard: true })
     })
     next.onExcavationStart((nodeId) => {
       if (excavationSession.value) {
@@ -263,8 +385,17 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onHudKeyDown)
+  touchMedia?.removeEventListener("change", syncTouchControls)
+  touchMedia = null
+  clearVirtualMove()
   if (noticeTimer) {
     clearTimeout(noticeTimer)
+  }
+  if (scanPressTimer) {
+    clearTimeout(scanPressTimer)
+  }
+  if (scanCooldownRaf) {
+    cancelAnimationFrame(scanCooldownRaf)
   }
   renderer.value?.destroy()
   renderer.value = null
@@ -284,6 +415,21 @@ onBeforeUnmount(() => {
     />
 
     <InventoryPanel v-if="debugHud || inventory.length > 0" :items="inventory" />
+
+    <div v-if="scanButtonVisible" class="scan-dock">
+      <ScanButton
+        :cooldown-ratio="scanCooldownRatio"
+        :cooldown-seconds="scanCooldownSeconds"
+        :pressed="scanButtonPressed"
+        :disabled="status !== 'connected'"
+        @activate="requestScan()"
+      />
+    </div>
+
+    <VirtualJoystick
+      v-if="joystickVisible"
+      @change="onVirtualMove"
+    />
 
     <div v-if="debugHud" class="hud hud-debug" aria-live="polite">
       <p>
@@ -346,7 +492,7 @@ onBeforeUnmount(() => {
       <p v-if="terrainTestActive" class="hint">
         Terrain test · C debug colors · L lighting · 1/2/3 zoom
       </p>
-      <p v-else class="hint">F3 : masquer · 1/2/3 zoom · E scan</p>
+      <p v-else class="hint">F3 : masquer · 1/2/3 zoom · scan (E)</p>
     </div>
 
     <div v-else class="hud hud-minimal" aria-live="polite">
@@ -356,9 +502,6 @@ onBeforeUnmount(() => {
       <p v-if="notice" class="notice">{{ notice }}</p>
       <p v-if="lastError" class="error">{{ lastError }}</p>
       <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
-      <p v-if="!notice && !lastError && !errorMessage && status === 'connected'" class="hint">
-        [E] scanner · F3 debug
-      </p>
     </div>
 
     <div v-if="debugHud" class="hud-notices" aria-live="polite">
@@ -391,6 +534,14 @@ onBeforeUnmount(() => {
   height: 100%;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+}
+
+.scan-dock {
+  position: absolute;
+  z-index: 4;
+  left: 1.1rem;
+  bottom: 1.1rem;
+  pointer-events: auto;
 }
 
 .hud {
@@ -468,10 +619,5 @@ onBeforeUnmount(() => {
 .hud-notices .notice {
   color: #d4a017;
   max-width: 18rem;
-}
-
-.hud-minimal .hint {
-  margin-top: 0;
-  opacity: 0.75;
 }
 </style>

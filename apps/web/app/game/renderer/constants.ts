@@ -22,5 +22,3 @@ export const REMOTE_PLAYER_TINT = 0x7a9eb5
 export const NODE_DETECTED_FILL = 0xf0c14a
 export const NODE_BUSY_FILL = 0xe07030
 export const NODE_DEPLETED_FILL = 0x5a5348
-export const SCAN_RING_COLOR = 0x7eb8c9
-export const SCAN_FILL_COLOR = 0x4a8fa3

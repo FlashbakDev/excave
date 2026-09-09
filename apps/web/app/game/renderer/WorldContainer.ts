@@ -1,6 +1,7 @@
 import { Container, Graphics, Sprite, type Texture } from "pixi.js"
 import {
   CHUNK_SIZE,
+  EXCAVATION_RANGE_PX,
   TILE_SIZE,
   TileType,
   chunkTileIndex,
@@ -28,26 +29,13 @@ import {
 } from "../world"
 import {
   CHUNK_BORDER_COLOR,
-  NODE_BUSY_FILL,
-  NODE_DEPLETED_FILL,
-  NODE_DETECTED_FILL,
   REMOTE_PLAYER_TINT,
-  SCAN_FILL_COLOR,
-  SCAN_RING_COLOR,
 } from "./constants"
+import { ExcavationNodeView } from "./ExcavationNodeView"
+import { ScanPulseEffect } from "./ScanPulseEffect"
 
 interface NodeMarker {
-  root: Container
-  body: Graphics
-  pulse: number
-}
-
-interface ScanPulse {
-  x: number
-  y: number
-  rangePx: number
-  age: number
-  duration: number
+  view: ExcavationNodeView
 }
 
 interface RemoteCharacter {
@@ -92,7 +80,7 @@ export class WorldContainer {
   private readonly chunkTiles = new Map<string, number[]>()
   private readonly remotes = new Map<string, RemoteCharacter>()
   private readonly nodeMarkers = new Map<string, NodeMarker>()
-  private readonly scanPulses: ScanPulse[] = []
+  private readonly scanPulseEffect = new ScanPulseEffect()
   private readonly assets: GameAssets
   private playerX = 0
   private playerY = 0
@@ -101,10 +89,15 @@ export class WorldContainer {
   private visualDecorSeed = DEFAULT_VISUAL_DECOR_SEED
   private decorEnabled = true
   private terrainDebugColors = false
+  private examineInteractionsEnabled = true
+  private nodeExamineListener: ((nodeId: string) => void) | null = null
+  private nodeTapZoom = 1
 
   constructor(assets: GameAssets) {
     this.assets = assets
     this.localCharacter = new CharacterView(assets.getExplorerTextures())
+    this.nodesLayer.eventMode = "passive"
+    this.root.eventMode = "passive"
 
     // void (app background) → ground → wallTop → wallFaces → decor → entities
     this.root.addChild(this.groundLayer)
@@ -292,16 +285,34 @@ export class WorldContainer {
     visualState: NodeVisualState,
   ): void {
     let marker = this.nodeMarkers.get(nodeId)
+    const isNew = !marker
     if (!marker) {
-      const root = new Container()
-      const body = new Graphics()
-      root.addChild(body)
-      marker = { root, body, pulse: 0 }
+      const view = new ExcavationNodeView()
+      view.setTapZoom(this.nodeTapZoom)
+      view.setExamineHandler(() => {
+        this.nodeExamineListener?.(nodeId)
+      })
+      marker = { view }
       this.nodeMarkers.set(nodeId, marker)
-      this.nodesLayer.addChild(root)
+      this.nodesLayer.addChild(view.root)
     }
-    marker.root.position.set(position.x, position.y)
-    this.drawNodeBody(marker, visualState)
+    marker.view.setWorldPosition(position.x, position.y)
+    marker.view.setVisualState(visualState)
+    if (isNew) {
+      // Ties scan pulse → fissure reveal into one beat.
+      marker.view.playReveal()
+    }
+  }
+
+  /** Keep fissure tap targets ~48 CSS px when camera zoom changes. */
+  setNodeTapZoom(zoom: number): void {
+    if (this.nodeTapZoom === zoom) {
+      return
+    }
+    this.nodeTapZoom = zoom
+    for (const marker of this.nodeMarkers.values()) {
+      marker.view.setTapZoom(zoom)
+    }
   }
 
   updateNodeVisual(nodeId: string, visualState: NodeVisualState): void {
@@ -309,7 +320,11 @@ export class WorldContainer {
     if (!marker) {
       return
     }
-    this.drawNodeBody(marker, visualState)
+    marker.view.setVisualState(visualState)
+  }
+
+  onNodeExamine(listener: ((nodeId: string) => void) | null): void {
+    this.nodeExamineListener = listener
   }
 
   getNearestDetectedNode(
@@ -319,8 +334,8 @@ export class WorldContainer {
     let best: { nodeId: string; distance: number } | null = null
     for (const [nodeId, marker] of this.nodeMarkers) {
       const dist = Math.hypot(
-        marker.root.position.x - position.x,
-        marker.root.position.y - position.y,
+        marker.view.root.position.x - position.x,
+        marker.view.root.position.y - position.y,
       )
       if (dist <= maxDistance && (!best || dist < best.distance)) {
         best = { nodeId, distance: dist }
@@ -330,62 +345,32 @@ export class WorldContainer {
   }
 
   tickNodes(dt: number): void {
+    this.updateNodeProximity()
     for (const marker of this.nodeMarkers.values()) {
-      marker.pulse += dt * 4
-      const scale = 1 + Math.sin(marker.pulse) * 0.12
-      marker.root.scale.set(scale)
+      marker.view.update(dt)
     }
-    this.tickScanPulses(dt)
+    this.scanPulseEffect.tick(dt, this.effectsLayer)
     this.tickCharacters(dt)
   }
 
-  /** Expand/fade ring showing the authoritative SCAN radius. */
+  /** Client scan juice — fixed origin at press; detection stays server-authoritative. */
   playScanPulse(position: WorldPosition, rangePx: number): void {
-    this.scanPulses.push({
-      x: position.x,
-      y: position.y,
-      rangePx,
-      age: 0,
-      duration: 0.55,
-    })
+    this.scanPulseEffect.play(position, rangePx)
   }
 
-  private tickScanPulses(dt: number): void {
-    if (this.scanPulses.length === 0) {
-      this.effectsLayer.clear()
-      return
-    }
-
-    for (const pulse of this.scanPulses) {
-      pulse.age += dt
-    }
-    for (let i = this.scanPulses.length - 1; i >= 0; i -= 1) {
-      if ((this.scanPulses[i]?.age ?? 0) >= (this.scanPulses[i]?.duration ?? 0)) {
-        this.scanPulses.splice(i, 1)
-      }
-    }
-
+  /** Drop in-flight scan visuals (destroy / reconnect). */
+  clearScanEffects(): void {
+    this.scanPulseEffect.clear()
     this.effectsLayer.clear()
-    for (const pulse of this.scanPulses) {
-      const t = Math.min(1, pulse.age / pulse.duration)
-      const radius = pulse.rangePx * (0.35 + 0.65 * t)
-      const fillAlpha = 0.22 * (1 - t)
-      const ringAlpha = 0.85 * (1 - t)
-      this.effectsLayer.circle(pulse.x, pulse.y, radius)
-      this.effectsLayer.fill({ color: SCAN_FILL_COLOR, alpha: fillAlpha })
-      this.effectsLayer.circle(pulse.x, pulse.y, radius)
-      this.effectsLayer.stroke({
-        width: 2,
-        color: SCAN_RING_COLOR,
-        alpha: ringAlpha,
-      })
-      this.effectsLayer.circle(pulse.x, pulse.y, pulse.rangePx)
-      this.effectsLayer.stroke({
-        width: 1.5,
-        color: SCAN_RING_COLOR,
-        alpha: 0.35 * (1 - t * 0.5),
-      })
+  }
+
+  /** Forget revealed nodes (rejoin — detections are per-session server-side). */
+  clearDetectedNodes(): void {
+    for (const marker of this.nodeMarkers.values()) {
+      this.nodesLayer.removeChild(marker.view.root)
+      marker.view.destroy()
     }
+    this.nodeMarkers.clear()
   }
 
   private tickCharacters(dt: number): void {
@@ -442,6 +427,11 @@ export class WorldContainer {
   }
 
   destroy(): void {
+    this.nodeExamineListener = null
+    this.clearScanEffects()
+    for (const marker of this.nodeMarkers.values()) {
+      marker.view.destroy()
+    }
     this.root.destroy({ children: true })
     this.chunkTerrain.clear()
     this.chunkDecor.clear()
@@ -450,20 +440,41 @@ export class WorldContainer {
     this.nodeMarkers.clear()
   }
 
-  private drawNodeBody(marker: NodeMarker, visualState: NodeVisualState): void {
-    const color =
-      visualState === Visual.Busy
-        ? NODE_BUSY_FILL
-        : visualState === Visual.Depleted
-          ? NODE_DEPLETED_FILL
-          : NODE_DETECTED_FILL
-    // Detected veins must read above cave decor (Lot 15C hierarchy).
-    marker.body.clear()
-    marker.body.star(0, 0, 5, 14, 6)
-    marker.body.fill({ color, alpha: 1 })
-    marker.body.stroke({ width: 2, color: 0xffe1a0, alpha: 0.95 })
-    marker.body.circle(0, 0, 3)
-    marker.body.fill({ color: 0xffe1a0, alpha: 0.55 })
+  setExamineInteractionsEnabled(enabled: boolean): void {
+    this.examineInteractionsEnabled = enabled
+    if (!enabled) {
+      for (const marker of this.nodeMarkers.values()) {
+        marker.view.setInRange(false)
+      }
+    }
+  }
+
+  private updateNodeProximity(): void {
+    if (!this.examineInteractionsEnabled) {
+      return
+    }
+    const player = this.getPlayerPosition()
+    let bestId: string | null = null
+    let bestDist = Number.POSITIVE_INFINITY
+
+    for (const [nodeId, marker] of this.nodeMarkers) {
+      if (marker.view.getVisualState() !== Visual.Detected) {
+        marker.view.setInRange(false)
+        continue
+      }
+      const dist = Math.hypot(
+        marker.view.root.position.x - player.x,
+        marker.view.root.position.y - player.y,
+      )
+      if (dist <= EXCAVATION_RANGE_PX && dist < bestDist) {
+        bestId = nodeId
+        bestDist = dist
+      }
+    }
+
+    for (const [nodeId, marker] of this.nodeMarkers) {
+      marker.view.setInRange(nodeId === bestId)
+    }
   }
 
   /** Missing / unloaded tiles count as Wall so AOI borders stay solid rock. */
